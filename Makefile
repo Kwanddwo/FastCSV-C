@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -fPIC
+CFLAGS = -Wall -Wextra -std=c99 -fPIC -O3
 LDFLAGS = -shared
 
 # Library source files
@@ -26,7 +26,7 @@ $(STATIC_LIB): $(LIB_OBJECTS)
 	ar rcs $@ $^
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -mavx2 -O3 -c $< -o $@
 
 # Test targets - delegate to tests/Makefile
 tests:
