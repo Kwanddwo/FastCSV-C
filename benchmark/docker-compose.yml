@@ -1,0 +1,46 @@
+services:
+  csvql:
+    build:
+      context: ..
+      dockerfile: benchmark/csvql/Dockerfile
+    environment:
+      DATA: /data/data.csv
+      ROWS: ${ROWS:-1000000}
+      RUNS: ${RUNS:-3}
+      OUT: /results/csvql.json
+      CSVQL_QUERY_ARENA_SIZE: ${CSVQL_QUERY_ARENA_SIZE:-512M}
+    volumes:
+      - ./data:/data:ro
+      - ./results:/results
+    restart: "no"
+
+  sqlite:
+    build:
+      context: .
+      dockerfile: sqlite/Dockerfile
+    environment:
+      DATA: /data/data.csv
+      ROWS: ${ROWS:-1000000}
+      RUNS: ${RUNS:-3}
+      OUT: /results/sqlite.json
+      DB: /shm/bench.db
+    volumes:
+      - ./data:/data:ro
+      - ./results:/results
+    tmpfs:
+      - /shm:size=1g
+    restart: "no"
+
+  league-csv:
+    build:
+      context: .
+      dockerfile: league-csv/Dockerfile
+    environment:
+      DATA: /data/data.csv
+      ROWS: ${ROWS:-1000000}
+      RUNS: ${RUNS:-3}
+      OUT: /results/league-csv.json
+    volumes:
+      - ./data:/data:ro
+      - ./results:/results
+    restart: "no"

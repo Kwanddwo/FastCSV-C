@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+.vscode
+*.o
+*.a
+*.so
+*.d
+tests/
+data/
+results/
+students.csv
+csvql
+query/test_grammar
+query/test_query
+query/*.o
+deps/linenoise.o
