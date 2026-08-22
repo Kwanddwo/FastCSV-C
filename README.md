@@ -26,6 +26,7 @@ A high-performance, memory-safe CSV parsing and writing library written in C wit
 ## 📋 Table of Contents
 
 - [Installation](#installation)
+- [Query Shell](#query-shell)
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
@@ -78,6 +79,56 @@ make benchmark
 | `make benchmark` | Run performance benchmarks |
 | `make clean` | Clean build artifacts |
 | `make help` | Show all available targets |
+| `make csvql` | Build the interactive query shell (`csvql`) |
+
+## 💻 Query Shell
+
+The `csvql` binary provides both an interactive REPL and a one-shot mode for running SQL queries against CSV files.
+
+### Build
+
+```bash
+make csvql
+```
+
+### Interactive REPL
+
+```bash
+./csvql
+```
+
+Features:
+
+- **Line editing** with arrow keys, Ctrl-A/Ctrl-E, Ctrl-W, history via up/down arrows
+- **Tab completion** for keywords and function names
+- **Multi-line statements** with a `...>` continuation prompt; execute with `;` or a blank line
+- **Multiple statements per line** separated by top-level `;`
+- **Persistent history** saved to `~/.csvql_history` (override with `$CSVQL_HISTORY`)
+- **Colors** enabled automatically on TTYs (disable with `NO_COLOR`)
+
+### Meta-commands
+
+| Command | Description |
+|---------|-------------|
+| `\h`, `\help`, `.help` | Show help |
+| `\q`, `\quit`, `\exit`, `exit`, `quit`, `.quit`, `.exit` | Exit the shell |
+| `\clear`, `clear` | Clear the screen |
+| `\echo <text>` | Print text |
+| `\version` | Show version |
+
+### One-shot mode
+
+```bash
+# Run a single statement and exit
+./csvql "SELECT * FROM \"students.csv\" WHERE age > 20;"
+
+# Exit code is 1 if the statement fails
+```
+
+> Table paths and column names are written as **double-quoted identifiers**
+> (SQL standard). This lets you reference files with spaces and names that
+> clash with keywords: `SELECT "first name" FROM "my data.csv"`. If a table
+> name has no `.csv` extension it is opened exactly as given, and `FROM
 
 ## 🚀 Quick Start
 
