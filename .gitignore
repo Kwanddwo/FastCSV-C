@@ -19,6 +19,10 @@ test_csv_writer
 test_csv_reader
 run_all_tests
 
+# SQL query module test executables
+query/test_grammar
+query/test_query
+
 # Build directories
 build/
 dist/
@@ -43,3 +47,7 @@ scan-build-results/
 
 # Test CSV files generated during testing
 test_*.csv
+
+# Benchmark suite outputs (generated at runtime)
+benchmark/data/
+benchmark/results/
