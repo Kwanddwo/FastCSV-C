@@ -4,16 +4,18 @@ LDFLAGS = -shared
 
 # Library source files
 LIB_SOURCES = arena.c csv_config.c csv_utils.c csv_parser.c csv_writer.c csv_reader.c \
-              query/scanner.c query/parser.c query/executor.c query/query.c
+              query/scanner.c query/parser.c query/expr.c query/query.c \
+              query/eval.c query/aggregate.c query/sort.c query/dedupe.c \
+              query/validate.c query/record.c query/executor.c
 LIB_OBJECTS = $(LIB_SOURCES:.c=.o)
 LIB_NAME = libcsv.so
 STATIC_LIB = libcsv.a
 
 # Build targets
-.PHONY: all build static shared tests clean help csvql test test-arena test-config test-utils test-parser test-writer test-reader valgrind valgrind-all
+.PHONY: all build static shared tests clean help csvql test test-grammar test-query test-arena test-config test-utils test-parser test-writer test-reader valgrind valgrind-all
 
 # Line-editing library used only by the csvql CLI (kept out of libcsv)
-LINENOISE_OBJ = deps/linenoise.o
+LINENOISE_OBJ = query/deps/linenoise.o
 
 all: build
 
@@ -29,13 +31,14 @@ $(LIB_NAME): $(LIB_OBJECTS)
 $(STATIC_LIB): $(LIB_OBJECTS)
 	ar rcs $@ $^
 
-csvql: csvql.c $(STATIC_LIB) $(LINENOISE_OBJ)
-	$(CC) $(CFLAGS) -o $@ csvql.c $(LINENOISE_OBJ) $(STATIC_LIB) -lm
+csvql: query/csvql.c $(STATIC_LIB) $(LINENOISE_OBJ)
+	mkdir -p query/build
+	$(CC) $(CFLAGS) -I. -Iquery -o query/build/csvql query/csvql.c $(LINENOISE_OBJ) $(STATIC_LIB) -lm
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-deps/linenoise.o: deps/linenoise.c deps/linenoise.h
+query/deps/linenoise.o: query/deps/linenoise.c query/deps/linenoise.h
 	$(CC) $(CFLAGS) -D_GNU_SOURCE -c $< -o $@
 
 # Test targets - delegate to tests/Makefile
@@ -58,8 +61,14 @@ test-parser:
 	$(MAKE) -C tests test-parser
 
 test-grammar: csvql
-	$(CC) $(CFLAGS) -o query/test_grammar query/test_grammar.c libcsv.a -lm
-	./query/test_grammar
+	mkdir -p query/build
+	$(CC) $(CFLAGS) -o query/build/test_grammar query/test_grammar.c libcsv.a -lm
+	./query/build/test_grammar
+
+test-query: csvql
+	mkdir -p query/build
+	$(CC) $(CFLAGS) -o query/build/test_query query/test_query.c libcsv.a -lm
+	./query/build/test_query
 
 test-writer:
 	$(MAKE) -C tests test-writer
@@ -95,8 +104,8 @@ valgrind-reader:
 clean:
 	rm -f *.o *.debug.o *.gcov.o *.gcno *.gcda *.a *.so *.d
 	rm -f $(LIB_NAME) $(STATIC_LIB)
-	rm -f csvql
 	rm -f $(LINENOISE_OBJ)
+	rm -rf query/build
 	rm -f query/*.o query/*.gcov query/*.gcda query/*.gcno
 	rm -f coverage.info profile.txt gmon.out
 	rm -rf scan-build-results
@@ -114,6 +123,8 @@ help:
 	@echo "Test Targets:"
 	@echo "  tests        - Build all test executables"
 	@echo "  test         - Build and run all tests"
+	@echo "  test-grammar - Build and run the SQL grammar suite (query/build/test_grammar)"
+	@echo "  test-query   - Build and run the SQL integration checks (query/build/test_query)"
 	@echo "  test-arena   - Run only arena tests"
 	@echo "  test-config  - Run only CSV config tests"
 	@echo "  test-utils   - Run only CSV utils tests"
@@ -132,7 +143,7 @@ help:
 	@echo "  valgrind-reader  - Run reader tests under valgrind"
 	@echo ""
 	@echo "CLI Tools:"
-	@echo "  csvql        - Build csvql CLI (REPL or csvql \"<sql>\")"
+	@echo "  csvql        - Build the csvql CLI (REPL or csvql \"<sql>\") into query/build/csvql"
 	@echo ""
 	@echo "Utility Targets:"
 	@echo "  clean        - Clean build artifacts"

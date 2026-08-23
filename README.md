@@ -63,8 +63,8 @@ make test
 # Optional: Run memory safety checks
 make valgrind
 
-# Performance benchmarks
-make benchmark
+# Performance benchmarks (csvql vs sqlite vs league/csv)
+./query/benchmark/run.sh
 ```
 
 ### Build Targets
@@ -76,7 +76,7 @@ make benchmark
 | `make static` | Build static library (`libcsv.a`) |
 | `make test` | Run all tests |
 | `make valgrind` | Run tests with Valgrind |
-| `make benchmark` | Run performance benchmarks |
+| `./query/benchmark/run.sh` | Run the csvql vs sqlite vs league/csv benchmarks |
 | `make clean` | Clean build artifacts |
 | `make help` | Show all available targets |
 | `make csvql` | Build the interactive query shell (`csvql`) |
@@ -88,13 +88,13 @@ The `csvql` binary provides both an interactive REPL and a one-shot mode for run
 ### Build
 
 ```bash
-make csvql
+make csvql          # builds query/build/csvql
 ```
 
 ### Interactive REPL
 
 ```bash
-./csvql
+./query/build/csvql
 ```
 
 Features:
@@ -120,14 +120,14 @@ Features:
 
 ```bash
 # Run a single statement and exit
-./csvql "SELECT * FROM \"students.csv\" WHERE age > 20;"
+./query/build/csvql "SELECT * FROM \"query/data/students.csv\" WHERE age > 20;"
 
 # Exit code is 1 if the statement fails
 ```
 
 > Table paths and column names are written as **double-quoted identifiers**
 > (SQL standard). This lets you reference files with spaces and names that
-> clash with keywords: `SELECT "first name" FROM "my data.csv"`. If a table
+> clash with keywords: `SELECT "first name" FROM "query/data/my data.csv"`. If a table
 > name has no `.csv` extension it is opened exactly as given, and `FROM
 
 ## 🚀 Quick Start
@@ -423,8 +423,7 @@ make valgrind
 make valgrind-all
 
 # Performance testing
-make benchmark
-make stress-test
+./query/benchmark/run.sh
 ```
 
 ### Test Results Summary

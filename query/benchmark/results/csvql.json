@@ -1,0 +1,1 @@
+{"candidate":"csvql","rows":1000000,"runs":3,"startup_ms":2,"load_ms":0,"queries":{"q1_filter":{"total_ms":663,"query_ms":663,"rows":287503},"q2_group":{"total_ms":466,"query_ms":466,"rows":8},"q3_sort":{"total_ms":1022,"query_ms":1022,"rows":100},"q4_count":{"total_ms":504,"query_ms":504,"rows":1000000}}}

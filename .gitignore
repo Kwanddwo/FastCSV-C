@@ -19,12 +19,8 @@ test_csv_writer
 test_csv_reader
 run_all_tests
 
-# SQL query module test executables
-query/test_grammar
-query/test_query
-
-# Build directories
-build/
+# Build directories (binaries land here: csvql, test_grammar, test_query)
+query/build/
 dist/
 coverage.info
 profile.txt

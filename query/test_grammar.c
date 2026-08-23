@@ -3,9 +3,10 @@
  * Some tests document features that are not yet implemented and
  * are expected to fail.  This is by design.
  *
- * Fixture note: table references resolve relative to the repo root,
+* Fixture note: table references resolve relative to the repo root,
  * so run via `make test-grammar` (or from the repository root).
- * The canonical fixture is 'students.csv'.
+ * The canonical fixtures live in query/data/ ('query/data/students.csv',
+ * 'query/data/distinct.csv', "query/data/my data.csv").
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,8 +141,8 @@ static int test_query_value(const char *sql, const char *expect_value) {
  * ================================================================= */
 static void test_top_level(void) {
     printf("--- sql / statement\n");
-    test_query("SELECT * FROM 'students.csv'", 5);
-    test_query_error("SELECT * FROM 'students.csv' EXTRA", "Unexpected token");
+    test_query("SELECT * FROM 'query/data/students.csv'", 5);
+    test_query_error("SELECT * FROM 'query/data/students.csv' EXTRA", "Unexpected token");
 }
 
 /* =================================================================
@@ -149,30 +150,30 @@ static void test_top_level(void) {
  * ================================================================= */
 static void test_select_query(void) {
     printf("--- select_query\n");
-    test_query("SELECT * FROM 'students.csv'", 5);
-    test_query("SELECT DISTINCT city FROM 'students.csv'", 3);
+    test_query("SELECT * FROM 'query/data/students.csv'", 5);
+    test_query("SELECT DISTINCT city FROM 'query/data/students.csv'", 3);
     /* ORDER BY */
-    test_query("SELECT * FROM 'students.csv' ORDER BY name", 5);
-    test_query("SELECT * FROM 'students.csv' ORDER BY name ASC", 5);
-    test_query("SELECT * FROM 'students.csv' ORDER BY name DESC", 5);
-    test_query("SELECT * FROM 'students.csv' ORDER BY age", 5);
-    test_query("SELECT * FROM 'students.csv' ORDER BY age DESC, name ASC", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY name", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY name ASC", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY name DESC", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY age", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY age DESC, name ASC", 5);
     /* LIMIT / OFFSET */
-    test_query("SELECT * FROM 'students.csv' LIMIT 1", 1);
-    test_query("SELECT * FROM 'students.csv' LIMIT 3", 3);
-    test_query("SELECT * FROM 'students.csv' LIMIT 10", 5);
-    test_query("SELECT * FROM 'students.csv' OFFSET 2", 3);
-    test_query("SELECT * FROM 'students.csv' LIMIT 2 OFFSET 1", 2);
-    test_query("SELECT * FROM 'students.csv' OFFSET 1 LIMIT 2", 2);
-    test_query("SELECT * FROM 'students.csv' LIMIT 0", 0);
-    test_query("SELECT * FROM 'students.csv' OFFSET 10", 0);
+    test_query("SELECT * FROM 'query/data/students.csv' LIMIT 1", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' LIMIT 3", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' LIMIT 10", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' OFFSET 2", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' LIMIT 2 OFFSET 1", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' OFFSET 1 LIMIT 2", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' LIMIT 0", 0);
+    test_query("SELECT * FROM 'query/data/students.csv' OFFSET 10", 0);
     /* ORDER BY + LIMIT */
-    test_query("SELECT * FROM 'students.csv' ORDER BY age DESC LIMIT 2", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY age DESC LIMIT 2", 2);
     /* GROUP BY / HAVING */
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city HAVING COUNT(*) > 1", 2);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city HAVING COUNT(*) > 1", 2);
     /* JOIN – parser will see JOIN as identifier then error */
-    test_query_error("SELECT * FROM 'students.csv' JOIN 'x.csv'", "Unexpected token");
+    test_query_error("SELECT * FROM 'query/data/students.csv' JOIN 'x.csv'", "Unexpected token");
 }
 
 /* =================================================================
@@ -180,14 +181,14 @@ static void test_select_query(void) {
  * ================================================================= */
 static void test_select_list(void) {
     printf("--- select_list / select_item\n");
-    test_query_header_count("SELECT * FROM 'students.csv'", 3);
-    test_query_header_count("SELECT name, age FROM 'students.csv'", 2);
-    test_query_any("SELECT age + 1 FROM 'students.csv'");
-    test_query_any("SELECT age + 1 AS a FROM 'students.csv'");
-    test_query_any("SELECT age + 1 a FROM 'students.csv'");
-    test_query_header_count("SELECT name, age, city, age * 2, UPPER(name) FROM 'students.csv'", 5);
+    test_query_header_count("SELECT * FROM 'query/data/students.csv'", 3);
+    test_query_header_count("SELECT name, age FROM 'query/data/students.csv'", 2);
+    test_query_any("SELECT age + 1 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age + 1 AS a FROM 'query/data/students.csv'");
+    test_query_any("SELECT age + 1 a FROM 'query/data/students.csv'");
+    test_query_header_count("SELECT name, age, city, age * 2, UPPER(name) FROM 'query/data/students.csv'", 5);
     /* scalar subquery in select_list – unimplemented */
-    test_query_error("SELECT (SELECT age FROM 'students.csv') FROM 'students.csv'", "not supported");
+    test_query_error("SELECT (SELECT age FROM 'query/data/students.csv') FROM 'query/data/students.csv'", "not supported");
 }
 
 /* =================================================================
@@ -195,11 +196,11 @@ static void test_select_list(void) {
  * ================================================================= */
 static void test_table_reference(void) {
     printf("--- table_reference\n");
-    test_query("SELECT * FROM 'students.csv'", 5);                               /* string literal */
-    test_query_any("SELECT * FROM students");                                    /* bare identifier (resolves to students.csv) */
-    test_query_any("SELECT * FROM \"students.csv\"");                            /* double-quoted identifier */
-    test_query_any("SELECT * FROM \"my data.csv\"");                             /* path with a space */
-    test_query_error("SELECT * FROM (SELECT * FROM 'students.csv') AS t", "Expected"); /* subquery in FROM */
+    test_query("SELECT * FROM 'query/data/students.csv'", 5);                               /* string literal */
+    test_query_any("SELECT * FROM \"query/data/students\"");                            /* sans-extension (resolves to data/students.csv) */
+    test_query_any("SELECT * FROM \"query/data/students.csv\"");                        /* double-quoted identifier */
+    test_query_any("SELECT * FROM \"query/data/my data.csv\"");                             /* path with a space */
+    test_query_error("SELECT * FROM (SELECT * FROM 'query/data/students.csv') AS t", "Expected"); /* subquery in FROM */
 }
 
 /* =================================================================
@@ -207,9 +208,9 @@ static void test_table_reference(void) {
  * ================================================================= */
 static void test_alias(void) {
     printf("--- alias\n");
-    test_query_any("SELECT name AS n FROM 'students.csv'");
-    test_query_any("SELECT name n FROM 'students.csv'");
-    test_query_any("SELECT age * 2 AS double_age FROM 'students.csv'");
+    test_query_any("SELECT name AS n FROM 'query/data/students.csv'");
+    test_query_any("SELECT name n FROM 'query/data/students.csv'");
+    test_query_any("SELECT age * 2 AS double_age FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -217,13 +218,13 @@ static void test_alias(void) {
  * ================================================================= */
 static void test_bitwise_expr(void) {
     printf("--- bitwise_expr (& | ^)\n");
-    test_query_any("SELECT 6 & 3 FROM 'students.csv'");
-    test_query_any("SELECT 6 | 3 FROM 'students.csv'");
-    test_query_any("SELECT 6 ^ 3 FROM 'students.csv'");
-    test_query_any("SELECT 6 & 3 | 1 FROM 'students.csv'");
-    test_query_any("SELECT age & 3 FROM 'students.csv'");
-    test_query_any("SELECT age | 1 FROM 'students.csv'");
-    test_query_any("SELECT age ^ 2 FROM 'students.csv'");
+    test_query_any("SELECT 6 & 3 FROM 'query/data/students.csv'");
+    test_query_any("SELECT 6 | 3 FROM 'query/data/students.csv'");
+    test_query_any("SELECT 6 ^ 3 FROM 'query/data/students.csv'");
+    test_query_any("SELECT 6 & 3 | 1 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age & 3 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age | 1 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age ^ 2 FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -231,10 +232,10 @@ static void test_bitwise_expr(void) {
  * ================================================================= */
 static void test_additive_expr(void) {
     printf("--- additive_expr (+ -)\n");
-    test_query_any("SELECT age + 1 FROM 'students.csv'");
-    test_query_any("SELECT age - 1 FROM 'students.csv'");
-    test_query_any("SELECT age + 1 + 1 FROM 'students.csv'");
-    test_query_any("SELECT age + 1 - 2 FROM 'students.csv'");
+    test_query_any("SELECT age + 1 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age - 1 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age + 1 + 1 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age + 1 - 2 FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -242,10 +243,10 @@ static void test_additive_expr(void) {
  * ================================================================= */
 static void test_multiplicative_expr(void) {
     printf("--- multiplicative_expr (* / %%)\n");
-    test_query_any("SELECT age * 2 FROM 'students.csv'");
-    test_query_any("SELECT age / 2 FROM 'students.csv'");
-    test_query_any("SELECT age % 3 FROM 'students.csv'");
-    test_query_any("SELECT age * 2 / 4 FROM 'students.csv'");
+    test_query_any("SELECT age * 2 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age / 2 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age % 3 FROM 'query/data/students.csv'");
+    test_query_any("SELECT age * 2 / 4 FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -253,11 +254,11 @@ static void test_multiplicative_expr(void) {
  * ================================================================= */
 static void test_precedence(void) {
     printf("--- expression precedence\n");
-    test_query_any("SELECT 1 + 2 * 3 FROM 'students.csv'");        /* 7, not 9 */
-    test_query_any("SELECT (1 + 2) * 3 FROM 'students.csv'");      /* 9 */
-    test_query_any("SELECT 1 * 2 + 3 FROM 'students.csv'");        /* 5 */
-    test_query_any("SELECT 1 + 2 * 3 - 4 / 2 FROM 'students.csv'"); /* 1+6-2 = 5 */
-    test_query_any("SELECT 1 & 2 + 3 FROM 'students.csv'");        /* & after + : 1 & 5 = 1 */
+    test_query_any("SELECT 1 + 2 * 3 FROM 'query/data/students.csv'");        /* 7, not 9 */
+    test_query_any("SELECT (1 + 2) * 3 FROM 'query/data/students.csv'");      /* 9 */
+    test_query_any("SELECT 1 * 2 + 3 FROM 'query/data/students.csv'");        /* 5 */
+    test_query_any("SELECT 1 + 2 * 3 - 4 / 2 FROM 'query/data/students.csv'"); /* 1+6-2 = 5 */
+    test_query_any("SELECT 1 & 2 + 3 FROM 'query/data/students.csv'");        /* & after + : 1 & 5 = 1 */
 }
 
 /* =================================================================
@@ -265,10 +266,10 @@ static void test_precedence(void) {
  * ================================================================= */
 static void test_unary(void) {
     printf("--- unary + / -\n");
-    test_query_any("SELECT -age FROM 'students.csv'");
-    test_query_any("SELECT +age FROM 'students.csv'");
-    test_query_any("SELECT --age FROM 'students.csv'");
-    test_query_any("SELECT -age + 1 FROM 'students.csv'");
+    test_query_any("SELECT -age FROM 'query/data/students.csv'");
+    test_query_any("SELECT +age FROM 'query/data/students.csv'");
+    test_query_any("SELECT --age FROM 'query/data/students.csv'");
+    test_query_any("SELECT -age + 1 FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -276,49 +277,49 @@ static void test_unary(void) {
  * ================================================================= */
 static void test_function_calls(void) {
     printf("--- function_call\n");
-    test_query_any("SELECT LENGTH('hello') FROM 'students.csv'");
-    test_query_any("SELECT UPPER(name) FROM 'students.csv'");
-    test_query_any("SELECT LOWER(city) FROM 'students.csv'");
-    test_query_any("SELECT SUBSTR(name, 1, 3) FROM 'students.csv'");
-    test_query_any("SELECT TRIM(city) FROM 'students.csv'");
-    test_query_any("SELECT COALESCE(NULL, 'hi') FROM 'students.csv'");
-    test_query_any("SELECT IFNULL(NULL, 'hi') FROM 'students.csv'");
-    test_query_any("SELECT ABS(-5) FROM 'students.csv'");
-    test_query_any("SELECT ROUND(3.14159, 2) FROM 'students.csv'");
-    test_query_any("SELECT LENGTH(UPPER(name)) FROM 'students.csv'");
-    test_query_any("SELECT CONCAT(name, ' ', city) FROM 'students.csv'");
-    test_query_any("SELECT UCASE(name) FROM 'students.csv'");
-    test_query_any("SELECT LCASE(city) FROM 'students.csv'");
-    test_query_any("SELECT SUBSTRING(name, 2, 2) FROM 'students.csv'");
+    test_query_any("SELECT LENGTH('hello') FROM 'query/data/students.csv'");
+    test_query_any("SELECT UPPER(name) FROM 'query/data/students.csv'");
+    test_query_any("SELECT LOWER(city) FROM 'query/data/students.csv'");
+    test_query_any("SELECT SUBSTR(name, 1, 3) FROM 'query/data/students.csv'");
+    test_query_any("SELECT TRIM(city) FROM 'query/data/students.csv'");
+    test_query_any("SELECT COALESCE(NULL, 'hi') FROM 'query/data/students.csv'");
+    test_query_any("SELECT IFNULL(NULL, 'hi') FROM 'query/data/students.csv'");
+    test_query_any("SELECT ABS(-5) FROM 'query/data/students.csv'");
+    test_query_any("SELECT ROUND(3.14159, 2) FROM 'query/data/students.csv'");
+    test_query_any("SELECT LENGTH(UPPER(name)) FROM 'query/data/students.csv'");
+    test_query_any("SELECT CONCAT(name, ' ', city) FROM 'query/data/students.csv'");
+    test_query_any("SELECT UCASE(name) FROM 'query/data/students.csv'");
+    test_query_any("SELECT LCASE(city) FROM 'query/data/students.csv'");
+    test_query_any("SELECT SUBSTRING(name, 2, 2) FROM 'query/data/students.csv'");
     /* aggregate functions */
-    test_query("SELECT COUNT(*) FROM 'students.csv'", 1);
-    test_query("SELECT SUM(age) FROM 'students.csv'", 1);
-    test_query("SELECT AVG(age) FROM 'students.csv'", 1);
-    test_query("SELECT MIN(age) FROM 'students.csv'", 1);
-    test_query("SELECT MAX(age) FROM 'students.csv'", 1);
-    test_query("SELECT COUNT(*) FROM 'students.csv' WHERE age > 20", 1);
-    test_query("SELECT COUNT(name) FROM 'students.csv'", 1);
-    test_query("SELECT MAX(name) FROM 'students.csv'", 1);
-    test_query("SELECT ROUND(AVG(age), 1) FROM 'students.csv'", 1);
-    test_query("SELECT MAX(age) + 1 FROM 'students.csv'", 1);
-    test_query("SELECT SUM(age) FROM 'students.csv' WHERE age > 99", 1);      /* NULL -> 1 row */
-    test_query("SELECT COUNT(*), MAX(age) FROM 'students.csv'", 1);
-    test_query("SELECT 'Total:', COUNT(*) FROM 'students.csv'", 1);           /* literal + aggregate */
-    test_query("SELECT COUNT(DISTINCT city) FROM 'students.csv'", 1);
-    test_query("SELECT SUM(DISTINCT age) FROM 'students.csv'", 1);
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT SUM(age) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT AVG(age) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT MIN(age) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT MAX(age) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv' WHERE age > 20", 1);
+    test_query("SELECT COUNT(name) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT MAX(name) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT ROUND(AVG(age), 1) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT MAX(age) + 1 FROM 'query/data/students.csv'", 1);
+    test_query("SELECT SUM(age) FROM 'query/data/students.csv' WHERE age > 99", 1);      /* NULL -> 1 row */
+    test_query("SELECT COUNT(*), MAX(age) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT 'Total:', COUNT(*) FROM 'query/data/students.csv'", 1);           /* literal + aggregate */
+    test_query("SELECT COUNT(DISTINCT city) FROM 'query/data/students.csv'", 1);
+    test_query("SELECT SUM(DISTINCT age) FROM 'query/data/students.csv'", 1);
     /* Value-aware DISTINCT on mixed data: '5' and '05' collapse to one value,
    so COUNT(DISTINCT val) is 7 and the numeric sum drops the duplicate. */
-    test_query_value("SELECT COUNT(DISTINCT val) FROM 'distinct.csv'", "7");
-    test_query_value("SELECT SUM(DISTINCT val) FROM 'distinct.csv'", "28.5");
-    test_query_value("SELECT AVG(DISTINCT val) FROM 'distinct.csv'", "5.7");
-    test_query("SELECT grp, COUNT(DISTINCT val) FROM 'distinct.csv' GROUP BY grp", 3);
-    test_query("SELECT MAX(age) FROM 'students.csv' LIMIT 1", 1);
-    test_query_error("SELECT name, MAX(age) FROM 'students.csv'", "GROUP BY");
-    test_query_error("SELECT MAX(age) FROM 'students.csv' WHERE SUM(age) > 5", "not supported");
-    test_query_error("SELECT COUNT(DISTINCT *) FROM 'students.csv'", "cannot be applied");
-    test_query_error("SELECT UPPER(DISTINCT name) FROM 'students.csv'", "DISTINCT is only allowed");
+    test_query_value("SELECT COUNT(DISTINCT val) FROM 'query/data/distinct.csv'", "7");
+    test_query_value("SELECT SUM(DISTINCT val) FROM 'query/data/distinct.csv'", "28.5");
+    test_query_value("SELECT AVG(DISTINCT val) FROM 'query/data/distinct.csv'", "5.7");
+    test_query("SELECT grp, COUNT(DISTINCT val) FROM 'query/data/distinct.csv' GROUP BY grp", 3);
+    test_query("SELECT MAX(age) FROM 'query/data/students.csv' LIMIT 1", 1);
+    test_query_error("SELECT name, MAX(age) FROM 'query/data/students.csv'", "GROUP BY");
+    test_query_error("SELECT MAX(age) FROM 'query/data/students.csv' WHERE SUM(age) > 5", "not supported");
+    test_query_error("SELECT COUNT(DISTINCT *) FROM 'query/data/students.csv'", "cannot be applied");
+    test_query_error("SELECT UPPER(DISTINCT name) FROM 'query/data/students.csv'", "DISTINCT is only allowed");
     /* unknown function */
-    test_query_error("SELECT nonexistent(name) FROM 'students.csv'", "Unknown function");
+    test_query_error("SELECT nonexistent(name) FROM 'query/data/students.csv'", "Unknown function");
 }
 
 /* =================================================================
@@ -326,29 +327,29 @@ static void test_function_calls(void) {
  * ================================================================= */
 static void test_group_by_having(void) {
     printf("--- group_by / having\n");
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT city, MAX(age) FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT age, COUNT(*) FROM 'students.csv' GROUP BY age", 5);
-    test_query("SELECT city FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT city, SUM(age) FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT city, AVG(age) FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT LOWER(city), COUNT(*) FROM 'students.csv' GROUP BY LOWER(city)", 3);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city HAVING COUNT(*) > 1", 2);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city HAVING COUNT(*) < 2", 1);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city HAVING city = 'LA'", 1);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city ORDER BY COUNT(*) DESC", 3);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city LIMIT 2", 2);
-    test_query("SELECT city, COUNT(DISTINCT name) FROM 'students.csv' GROUP BY city", 3);
-    test_query("SELECT COUNT(*) FROM 'students.csv' HAVING COUNT(*) > 1", 1);
-    test_query("SELECT COUNT(*) FROM 'students.csv' WHERE age > 20 HAVING COUNT(*) > 1", 1);
-    test_query("SELECT COUNT(*) FROM 'students.csv' WHERE age > 99 HAVING COUNT(*) > 1", 0);
-    test_query("SELECT city, COUNT(*) FROM 'students.csv' WHERE age > 20 GROUP BY city", 2);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT city, MAX(age) FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT age, COUNT(*) FROM 'query/data/students.csv' GROUP BY age", 5);
+    test_query("SELECT city FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT city, SUM(age) FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT city, AVG(age) FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT LOWER(city), COUNT(*) FROM 'query/data/students.csv' GROUP BY LOWER(city)", 3);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city HAVING COUNT(*) > 1", 2);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city HAVING COUNT(*) < 2", 1);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city HAVING city = 'LA'", 1);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city ORDER BY COUNT(*) DESC", 3);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city LIMIT 2", 2);
+    test_query("SELECT city, COUNT(DISTINCT name) FROM 'query/data/students.csv' GROUP BY city", 3);
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv' HAVING COUNT(*) > 1", 1);
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv' WHERE age > 20 HAVING COUNT(*) > 1", 1);
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv' WHERE age > 99 HAVING COUNT(*) > 1", 0);
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' WHERE age > 20 GROUP BY city", 2);
     /* validation errors */
-    test_query_error("SELECT name FROM 'students.csv' GROUP BY city", "GROUP BY");
-    test_query_error("SELECT * FROM 'students.csv' GROUP BY city", "GROUP BY");
-    test_query_error("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city HAVING name = 'x'", "GROUP BY");
-    test_query_error("SELECT city, COUNT(*) FROM 'students.csv' GROUP BY city ORDER BY name", "GROUP BY");
-    test_query_error("SELECT * FROM 'students.csv' HAVING age > 0", "HAVING without GROUP BY");
+    test_query_error("SELECT name FROM 'query/data/students.csv' GROUP BY city", "GROUP BY");
+    test_query_error("SELECT * FROM 'query/data/students.csv' GROUP BY city", "GROUP BY");
+    test_query_error("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city HAVING name = 'x'", "GROUP BY");
+    test_query_error("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city ORDER BY name", "GROUP BY");
+    test_query_error("SELECT * FROM 'query/data/students.csv' HAVING age > 0", "HAVING without GROUP BY");
 }
 
 /* =================================================================
@@ -357,18 +358,18 @@ static void test_group_by_having(void) {
 static void test_case_expression(void) {
     printf("--- case_expression\n");
     /* searched CASE */
-    test_query_any("SELECT CASE WHEN 1 < 2 THEN 'yes' END FROM 'students.csv'");
+    test_query_any("SELECT CASE WHEN 1 < 2 THEN 'yes' END FROM 'query/data/students.csv'");
     test_query_any(
         "SELECT CASE WHEN age < 21 THEN 'young' WHEN age < 23 THEN 'middle' ELSE 'old' END "
-        "FROM 'students.csv'");
+        "FROM 'query/data/students.csv'");
     /* simple CASE */
     test_query_any(
         "SELECT CASE city WHEN 'NYC' THEN 'NY' WHEN 'LA' THEN 'CA' ELSE city END "
-        "FROM 'students.csv'");
+        "FROM 'query/data/students.csv'");
     /* CASE without ELSE – yields NULL */
-    test_query_any("SELECT CASE WHEN age < 20 THEN 'young' END FROM 'students.csv'");
+    test_query_any("SELECT CASE WHEN age < 20 THEN 'young' END FROM 'query/data/students.csv'");
     /* CASE inside expression */
-    test_query_any("SELECT 1 + CASE WHEN 1 < 2 THEN 3 ELSE 4 END FROM 'students.csv'");
+    test_query_any("SELECT 1 + CASE WHEN 1 < 2 THEN 3 ELSE 4 END FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -376,8 +377,8 @@ static void test_case_expression(void) {
  * ================================================================= */
 static void test_qualified_identifier(void) {
     printf("--- qualified_identifier\n");
-    test_query_any("SELECT students.name FROM 'students.csv'");
-    test_query_any("SELECT * FROM 'students.csv' WHERE students.age > 20");
+    test_query_any("SELECT students.name FROM 'query/data/students.csv'");
+    test_query_any("SELECT * FROM 'query/data/students.csv' WHERE students.age > 20");
 }
 
 /* =================================================================
@@ -385,15 +386,15 @@ static void test_qualified_identifier(void) {
  * ================================================================= */
 static void test_quoted_identifier(void) {
     printf("--- quoted identifier\n");
-    test_query_any("SELECT \"name\" FROM 'students.csv'");
-    test_query_any("SELECT \"first name\" FROM \"my data.csv\"");
-    test_query_any("SELECT \"select\" FROM \"my data.csv\"");        /* keyword as identifier */
-    test_query_any("SELECT students.\"name\" FROM 'students.csv'"); /* qualified, quoted column */
-    test_query_any("SELECT \"name\" AS \"display name\" FROM 'students.csv'");
-    test_query_any("SELECT \"name\" FROM 'students.csv' WHERE \"name\" = 'Alice'");
-    test_query_any("SELECT \"name\" FROM 'students.csv' ORDER BY \"name\"");
-    test_query_any("SELECT \"name\" FROM 'students.csv' GROUP BY \"name\"");
-    test_query_error("SELECT \"unterminated FROM 'students.csv'", "Unterminated identifier");
+    test_query_any("SELECT \"name\" FROM 'query/data/students.csv'");
+    test_query_any("SELECT \"first name\" FROM \"query/data/my data.csv\"");
+    test_query_any("SELECT \"select\" FROM \"query/data/my data.csv\"");        /* keyword as identifier */
+    test_query_any("SELECT students.\"name\" FROM 'query/data/students.csv'"); /* qualified, quoted column */
+    test_query_any("SELECT \"name\" AS \"display name\" FROM 'query/data/students.csv'");
+    test_query_any("SELECT \"name\" FROM 'query/data/students.csv' WHERE \"name\" = 'Alice'");
+    test_query_any("SELECT \"name\" FROM 'query/data/students.csv' ORDER BY \"name\"");
+    test_query_any("SELECT \"name\" FROM 'query/data/students.csv' GROUP BY \"name\"");
+    test_query_error("SELECT \"unterminated FROM 'query/data/students.csv'", "Unterminated identifier");
 }
 
 /* =================================================================
@@ -401,14 +402,14 @@ static void test_quoted_identifier(void) {
  * ================================================================= */
 static void test_literals(void) {
     printf("--- literal\n");
-    test_query_any("SELECT 42 FROM 'students.csv'");
-    test_query_any("SELECT 3.14 FROM 'students.csv'");
-    test_query_any("SELECT 'hello' FROM 'students.csv'");
-    test_query_any("SELECT 'it''s a test' FROM 'students.csv'");
+    test_query_any("SELECT 42 FROM 'query/data/students.csv'");
+    test_query_any("SELECT 3.14 FROM 'query/data/students.csv'");
+    test_query_any("SELECT 'hello' FROM 'query/data/students.csv'");
+    test_query_any("SELECT 'it''s a test' FROM 'query/data/students.csv'");
     test_query_error("SELECT 'unterminated", "Unterminated string");
-    test_query_any("SELECT NULL FROM 'students.csv'");
-    test_query_any("SELECT TRUE FROM 'students.csv'");
-    test_query_any("SELECT FALSE FROM 'students.csv'");
+    test_query_any("SELECT NULL FROM 'query/data/students.csv'");
+    test_query_any("SELECT TRUE FROM 'query/data/students.csv'");
+    test_query_any("SELECT FALSE FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -416,9 +417,9 @@ static void test_literals(void) {
  * ================================================================= */
 static void test_parenthesized_expr(void) {
     printf("--- parenthesized expression\n");
-    test_query_any("SELECT (age) FROM 'students.csv'");
-    test_query_any("SELECT ((age)) FROM 'students.csv'");
-    test_query_any("SELECT (age + 1) * 2 FROM 'students.csv'");
+    test_query_any("SELECT (age) FROM 'query/data/students.csv'");
+    test_query_any("SELECT ((age)) FROM 'query/data/students.csv'");
+    test_query_any("SELECT (age + 1) * 2 FROM 'query/data/students.csv'");
 }
 
 /* =================================================================
@@ -426,7 +427,7 @@ static void test_parenthesized_expr(void) {
  * ================================================================= */
 static void test_scalar_subquery(void) {
     printf("--- scalar subquery (unimplemented)\n");
-    test_query_error("SELECT (SELECT age FROM 'students.csv') FROM 'students.csv'", "not supported");
+    test_query_error("SELECT (SELECT age FROM 'query/data/students.csv') FROM 'query/data/students.csv'", "not supported");
 }
 
 /* =================================================================
@@ -434,9 +435,9 @@ static void test_scalar_subquery(void) {
  * ================================================================= */
 static void test_search_not(void) {
     printf("--- NOT\n");
-    test_query("SELECT * FROM 'students.csv' WHERE NOT age = 20", 4);
-    test_query("SELECT * FROM 'students.csv' WHERE NOT (age = 20)", 4);
-    test_query("SELECT * FROM 'students.csv' WHERE NOT age < 21 AND city = 'LA'", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE NOT age = 20", 4);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE NOT (age = 20)", 4);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE NOT age < 21 AND city = 'LA'", 2);
 }
 
 /* =================================================================
@@ -444,17 +445,17 @@ static void test_search_not(void) {
  * ================================================================= */
 static void test_comparison_operators(void) {
     printf("--- comparison_operator\n");
-    test_query("SELECT * FROM 'students.csv' WHERE age = 20", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE age != 20", 4);
-    test_query("SELECT * FROM 'students.csv' WHERE age <> 20", 4);
-    test_query("SELECT * FROM 'students.csv' WHERE age < 21", 2);
-    test_query("SELECT * FROM 'students.csv' WHERE age > 21", 2);
-    test_query("SELECT * FROM 'students.csv' WHERE age <= 21", 3);
-    test_query("SELECT * FROM 'students.csv' WHERE age >= 21", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age = 20", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age != 20", 4);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age <> 20", 4);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age < 21", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 21", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age <= 21", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age >= 21", 3);
     /* expressions on both sides */
-    test_query("SELECT * FROM 'students.csv' WHERE age + 1 = 21", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE age = 10 + 10", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE age + 1 = age + 1", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age + 1 = 21", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age = 10 + 10", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age + 1 = age + 1", 5);
 }
 
 /* =================================================================
@@ -462,11 +463,11 @@ static void test_comparison_operators(void) {
  * ================================================================= */
 static void test_search_in(void) {
     printf("--- IN / NOT IN\n");
-    test_query("SELECT * FROM 'students.csv' WHERE city IN ('NYC', 'LA')", 4);
-    test_query("SELECT * FROM 'students.csv' WHERE city NOT IN ('NYC', 'LA')", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE age IN (20, 22)", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE city IN ('NYC', 'LA')", 4);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE city NOT IN ('NYC', 'LA')", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age IN (20, 22)", 2);
     /* IN (subquery) – unimplemented; should error */
-    test_query_error("SELECT * FROM 'students.csv' WHERE age IN (SELECT 20 FROM 'students.csv')", "not supported");
+    test_query_error("SELECT * FROM 'query/data/students.csv' WHERE age IN (SELECT 20 FROM 'query/data/students.csv')", "not supported");
 }
 
 /* =================================================================
@@ -474,8 +475,8 @@ static void test_search_in(void) {
  * ================================================================= */
 static void test_search_between(void) {
     printf("--- BETWEEN\n");
-    test_query("SELECT * FROM 'students.csv' WHERE age BETWEEN 20 AND 22", 3);
-    test_query("SELECT * FROM 'students.csv' WHERE age BETWEEN 20 AND 22 AND city = 'NYC'", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age BETWEEN 20 AND 22", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age BETWEEN 20 AND 22 AND city = 'NYC'", 2);
 }
 
 /* =================================================================
@@ -483,12 +484,12 @@ static void test_search_between(void) {
  * ================================================================= */
 static void test_search_like(void) {
     printf("--- LIKE / ILIKE\n");
-    test_query("SELECT * FROM 'students.csv' WHERE name LIKE 'A%'", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE name LIKE '%e'", 3);
-    test_query("SELECT * FROM 'students.csv' WHERE name LIKE '%li%'", 2);
-    test_query("SELECT * FROM 'students.csv' WHERE name LIKE 'A____'", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE city ILIKE 'nyc'", 2);
-    test_query("SELECT * FROM 'students.csv' WHERE city ILIKE 'l%'", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE name LIKE 'A%'", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE name LIKE '%e'", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE name LIKE '%li%'", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE name LIKE 'A____'", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE city ILIKE 'nyc'", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE city ILIKE 'l%'", 2);
 }
 
 /* =================================================================
@@ -496,16 +497,16 @@ static void test_search_like(void) {
  * ================================================================= */
 static void test_search_and_or(void) {
     printf("--- AND / OR\n");
-    test_query("SELECT * FROM 'students.csv' WHERE age > 20 AND city = 'NYC'", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE age = 20 OR age = 22", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 20 AND city = 'NYC'", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age = 20 OR age = 22", 2);
     /* AND binds tighter than OR — 3 rows: (age>20 AND city=NYC)=Diana, OR city=LA=Bob+Eve => total 3 */
-    test_query("SELECT * FROM 'students.csv' WHERE age > 20 AND city = 'NYC' OR city = 'LA'", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 20 AND city = 'NYC' OR city = 'LA'", 3);
     /* explicit parens – same result */
-    test_query("SELECT * FROM 'students.csv' WHERE (age > 20 AND city = 'NYC') OR city = 'LA'", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE (age > 20 AND city = 'NYC') OR city = 'LA'", 3);
     /* different grouping – age>20 AND (city=NYC OR city=LA) => Bob(22,LA), Diana(21,NYC), Eve(23,LA) = 3 */
-    test_query("SELECT * FROM 'students.csv' WHERE age > 20 AND (city = 'NYC' OR city = 'LA')", 3);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 20 AND (city = 'NYC' OR city = 'LA')", 3);
     /* chained AND */
-    test_query("SELECT * FROM 'students.csv' WHERE age > 19 AND age < 22 AND city = 'NYC'", 2);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 19 AND age < 22 AND city = 'NYC'", 2);
 }
 
 /* =================================================================
@@ -513,8 +514,8 @@ static void test_search_and_or(void) {
  * ================================================================= */
 static void test_paren_search_condition(void) {
     printf("--- parenthesized search condition\n");
-    test_query("SELECT * FROM 'students.csv' WHERE (age = 20)", 1);
-    test_query("SELECT * FROM 'students.csv' WHERE ((age = 20))", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE (age = 20)", 1);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE ((age = 20))", 1);
 }
 
 /* =================================================================
@@ -522,9 +523,9 @@ static void test_paren_search_condition(void) {
  * ================================================================= */
 static void test_bare_expression_condition(void) {
     printf("--- bare expression condition (truthy)\n");
-    test_query("SELECT * FROM 'students.csv' WHERE age", 5);
-    test_query("SELECT * FROM 'students.csv' WHERE age - 20", 4);
-    test_query("SELECT * FROM 'students.csv' WHERE name", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE age - 20", 4);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE name", 5);
 }
 
 /* =================================================================
@@ -532,13 +533,13 @@ static void test_bare_expression_condition(void) {
  * ================================================================= */
 static void test_set_op(void) {
     printf("--- set_op (unimplemented)\n");
-    test_query_error("SELECT name FROM 'students.csv' UNION SELECT name FROM 'students.csv'",
+    test_query_error("SELECT name FROM 'query/data/students.csv' UNION SELECT name FROM 'query/data/students.csv'",
                      "Unexpected token");
-    test_query_error("SELECT name FROM 'students.csv' UNION ALL SELECT name FROM 'students.csv'",
+    test_query_error("SELECT name FROM 'query/data/students.csv' UNION ALL SELECT name FROM 'query/data/students.csv'",
                      "Unexpected token");
-    test_query_error("SELECT name FROM 'students.csv' INTERSECT SELECT name FROM 'students.csv'",
+    test_query_error("SELECT name FROM 'query/data/students.csv' INTERSECT SELECT name FROM 'query/data/students.csv'",
                      "Unexpected token");
-    test_query_error("SELECT name FROM 'students.csv' EXCEPT SELECT name FROM 'students.csv'",
+    test_query_error("SELECT name FROM 'query/data/students.csv' EXCEPT SELECT name FROM 'query/data/students.csv'",
                      "Unexpected token");
 }
 
@@ -547,9 +548,9 @@ static void test_set_op(void) {
  * ================================================================= */
 static void test_other_statements(void) {
     printf("--- other statements (unimplemented)\n");
-    test_query_error("INSERT INTO 'students.csv' VALUES ('x', 1, 'y')", "Expected 'SELECT'");
-    test_query_error("UPDATE 'students.csv' SET age = 21", "Expected 'SELECT'");
-    test_query_error("DELETE FROM 'students.csv'", "Expected 'SELECT'");
+    test_query_error("INSERT INTO 'query/data/students.csv' VALUES ('x', 1, 'y')", "Expected 'SELECT'");
+    test_query_error("UPDATE 'query/data/students.csv' SET age = 21", "Expected 'SELECT'");
+    test_query_error("DELETE FROM 'query/data/students.csv'", "Expected 'SELECT'");
     test_query_error("CREATE TABLE foo (a INT)", "Expected 'SELECT'");
     test_query_error("ALTER TABLE foo ADD COLUMN b INT", "Expected 'SELECT'");
 }
@@ -567,17 +568,17 @@ static void test_error_recovery(void) {
     /* Multiple missing commas in the select list -> multiple errors.
      * (Cascading errors at the same position are suppressed, so the
      * trailing 'Expected ...' duplicates do not inflate the count.) */
-    test_query_parse_error_count("SELECT name age city FROM 'students.csv'", 2);
-    test_query_parse_error_count("SELECT 1 2 3 FROM 'students.csv'", 2);
+    test_query_parse_error_count("SELECT name age city FROM 'query/data/students.csv'", 2);
+    test_query_parse_error_count("SELECT 1 2 3 FROM 'query/data/students.csv'", 2);
 
     /* Valid query has zero parse errors */
-    test_query_parse_error_count("SELECT * FROM 'students.csv'", 0);
+    test_query_parse_error_count("SELECT * FROM 'query/data/students.csv'", 0);
 
     /* Error limit is capped at 50 */
-    test_query_parse_error_count("SELECT ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, FROM 'students.csv'", 50);
+    test_query_parse_error_count("SELECT ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, FROM 'query/data/students.csv'", 50);
 
     /* Runtime (semantic) errors still fail-fast and are not parse errors */
-    test_query_error("SELECT FakeCol FROM 'students.csv'", "Column");
+    test_query_error("SELECT FakeCol FROM 'query/data/students.csv'", "Column");
 }
 
 /* =================================================================

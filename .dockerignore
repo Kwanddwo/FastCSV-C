@@ -7,11 +7,10 @@
 *.so
 *.d
 tests/
-data/
-results/
-students.csv
-csvql
+query/build/
 query/test_grammar
 query/test_query
-query/*.o
-deps/linenoise.o
+query/benchmark/data/
+query/benchmark/results/
+query/benchmark/sqlite/
+query/benchmark/league-csv/

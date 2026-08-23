@@ -1,0 +1,29 @@
+{
+    "candidate": "league-csv",
+    "rows": 1000000,
+    "runs": 3,
+    "startup_ms": 2.779,
+    "load_ms": 5923.801,
+    "queries": {
+        "q1_filter": {
+            "total_ms": 7717.766,
+            "query_ms": 1793.965,
+            "rows": 287503
+        },
+        "q2_group": {
+            "total_ms": 6192.528,
+            "query_ms": 268.727,
+            "rows": 8
+        },
+        "q3_sort": {
+            "total_ms": 23290.309,
+            "query_ms": 17366.508,
+            "rows": 100
+        },
+        "q4_count": {
+            "total_ms": 5923.801,
+            "query_ms": 0,
+            "rows": 1000000
+        }
+    }
+}
