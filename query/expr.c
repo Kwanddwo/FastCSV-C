@@ -3,7 +3,10 @@
  * parser.c, which handles statement-level parsing (SELECT, FROM, WHERE,
  * GROUP BY, HAVING, ORDER BY, LIMIT / OFFSET). */
 #include "parser_internal.h"
+#include "str_util.h"
+#include "date.h"
 #include <stdlib.h>
+#include <stdio.h>
 
 /* ===== Forward declarations (mutual recursion) ===== */
 static ExprNode* parse_arithmetic_primary(Parser *parser);
@@ -133,6 +136,22 @@ static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
         return node;
     }
 
+    /* Standard POSITION(substring IN string) syntax: the arguments are
+       separated by IN, not a comma. */
+    if (str_ieq(func_name, "POSITION")) {
+        void *mem;
+        ArenaResult ar = arena_alloc(parser->arena, sizeof(ExprNode*) * 2, &mem);
+        if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return node; }
+        ExprNode **args = (ExprNode**)mem;
+        args[0] = parse_expression(parser);
+        consume(parser, TOKEN_IN, "Expected 'IN' in POSITION(substring IN string).");
+        args[1] = parse_expression(parser);
+        consume(parser, TOKEN_RPAREN, "Expected ')' after POSITION arguments.");
+        node->arg_count = 2;
+        node->args = args;
+        return node;
+    }
+
     node->args = parse_expr_list(parser, &node->arg_count,
                                  "Expected ',' or ')' after function argument.");
     return node;
@@ -205,6 +224,75 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
         ExprNode *node = make_leaf(parser, EXPR_LITERAL_NUMBER);
         node->str_value = copy_lexeme(parser, parser->previous.lexeme, parser->previous.length);
         node->num_value = strtod(node->str_value, NULL);
+        return node;
+    }
+
+    /* Datetime value functions (standard: CURRENT_DATE, CURRENT_TIME,
+       CURRENT_TIMESTAMP, LOCALTIME, LOCALTIMESTAMP). */
+    if (parser->current.type == TOKEN_CURRENT_DATE ||
+        parser->current.type == TOKEN_CURRENT_TIME ||
+        parser->current.type == TOKEN_CURRENT_TIMESTAMP ||
+        parser->current.type == TOKEN_LOCALTIME ||
+        parser->current.type == TOKEN_LOCALTIMESTAMP) {
+        TokenType kw = parser->current.type;
+        advance(parser);
+        ExprNode *node = make_leaf(parser, EXPR_DATETIME_VALUE);
+        switch (kw) {
+            case TOKEN_CURRENT_DATE: node->num_value = DT_CURRENT_DATE; break;
+            case TOKEN_CURRENT_TIME: node->num_value = DT_CURRENT_TIME; break;
+            case TOKEN_CURRENT_TIMESTAMP: node->num_value = DT_CURRENT_TIMESTAMP; break;
+            case TOKEN_LOCALTIME: node->num_value = DT_LOCALTIME; break;
+            default: node->num_value = DT_LOCALTIMESTAMP; break;
+        }
+        return node;
+    }
+
+    /* Datetime literals: DATE / TIME / TIMESTAMP '...' (standard since
+       SQL-92). The literal string is validated here; a malformed value is a
+       parse error, not a runtime NULL. */
+    if (parser->current.type == TOKEN_DATE ||
+        parser->current.type == TOKEN_TIME ||
+        parser->current.type == TOKEN_TIMESTAMP) {
+        TokenType kw = parser->current.type;
+        advance(parser);
+        consume(parser, TOKEN_STRING, "Expected string literal after date/time keyword.");
+        char *str = copy_string_literal(parser, parser->previous.lexeme,
+                                        parser->previous.length);
+        bool ok = (kw == TOKEN_DATE) ? is_valid_iso_date(str)
+                 : (kw == TOKEN_TIME) ? is_valid_iso_time(str)
+                                      : is_valid_iso_timestamp(str);
+        if (!ok) {
+            record_error(parser, "Invalid date/time literal.",
+                         parser->previous.line, parser->previous.column);
+        }
+        ExprNode *node = make_leaf(parser, EXPR_DATE_LITERAL);
+        node->str_value = str;
+        return node;
+    }
+
+    /* EXTRACT(field FROM expr): the field is a text identifier (YEAR, MONTH,
+       DAY, HOUR, MINUTE, SECOND, QUARTER), so those words stay usable as
+       column names everywhere else. */
+    if (match(parser, TOKEN_EXTRACT)) {
+        consume(parser, TOKEN_LPAREN, "Expected '(' after 'EXTRACT'.");
+        if (parser->current.type != TOKEN_IDENTIFIER) {
+            error_at_current(parser, "Expected a field name (YEAR, MONTH, DAY, ...) in EXTRACT.");
+            return make_error_node(parser, "Expected a field name in EXTRACT.");
+        }
+        Token field_tok = parser->current;
+        advance(parser);
+        char *field = copy_lexeme(parser, field_tok.lexeme, field_tok.length);
+        if (!is_valid_extract_field(field)) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Unknown EXTRACT field '%s'.", field);
+            record_error(parser, buf, field_tok.line, field_tok.column);
+        }
+        consume(parser, TOKEN_FROM, "Expected 'FROM' in EXTRACT.");
+        ExprNode *value = parse_expression(parser);
+        consume(parser, TOKEN_RPAREN, "Expected ')' after EXTRACT.");
+        ExprNode *node = make_leaf(parser, EXPR_EXTRACT);
+        node->str_value = field;
+        node->left = value;
         return node;
     }
 
@@ -436,6 +524,16 @@ static ExprNode* parse_primary_condition(Parser *parser) {
     if (match(parser, TOKEN_ILIKE)) {
         ExprNode *pattern = parse_expression(parser);
         return make_binary(parser, EXPR_ILIKE, expr, pattern);
+    }
+
+    /* IS [NOT] NULL — the only NULL test that never yields UNKNOWN */
+    if (match(parser, TOKEN_IS)) {
+        bool negate = match(parser, TOKEN_NOT);
+        consume(parser, TOKEN_NULL, "Expected 'NULL' after 'IS'.");
+        ExprNode *node = alloc_expr_node(parser);
+        node->type = negate ? EXPR_IS_NOT_NULL : EXPR_IS_NULL;
+        node->left = expr;
+        return node;
     }
 
     /* Bare expression (truthy evaluation) */

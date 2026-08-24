@@ -6,7 +6,7 @@
 * Fixture note: table references resolve relative to the repo root,
  * so run via `make test-grammar` (or from the repository root).
  * The canonical fixtures live in query/data/ ('query/data/students.csv',
- * 'query/data/distinct.csv', "query/data/my data.csv").
+ * 'query/data/distinct.csv', 'query/data/nulls.csv', "query/data/my data.csv").
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -413,6 +413,25 @@ static void test_literals(void) {
 }
 
 /* =================================================================
+ * 15.5 constant folding
+ * ================================================================= */
+static void test_constant_folding(void) {
+    printf("--- constant folding\n");
+    test_query_value("SELECT 1 + 2 FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT 6 & 3 FROM 'query/data/students.csv' LIMIT 1", "2");
+    test_query_value("SELECT 10 / 4 FROM 'query/data/students.csv' LIMIT 1", "2.5");
+    test_query_value("SELECT UPPER('abc') FROM 'query/data/students.csv' LIMIT 1", "ABC");
+    test_query_value("SELECT CASE WHEN 1 < 2 THEN 'yes' ELSE 'no' END FROM 'query/data/students.csv' LIMIT 1", "yes");
+    /* Folded constants in WHERE keep their truthiness semantics */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE 1 = 1", 5);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE age > (1 + 2)", 5);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE name LIKE 'A%' AND (1 = 1)", 1);
+    /* A constant subtree that fails to evaluate stays unfolded and still
+       errors per row (guard: folding must not swallow the error). */
+    test_query_error("SELECT nonexistent(1) FROM 'query/data/students.csv'", "Unknown function");
+}
+
+/* =================================================================
  * 16. '(' expression ')'
  * ================================================================= */
 static void test_parenthesized_expr(void) {
@@ -507,6 +526,211 @@ static void test_search_and_or(void) {
     test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 20 AND (city = 'NYC' OR city = 'LA')", 3);
     /* chained AND */
     test_query("SELECT * FROM 'query/data/students.csv' WHERE age > 19 AND age < 22 AND city = 'NYC'", 2);
+    /* Three-valued logic: UNKNOWN ∧ TRUE = UNKNOWN, UNKNOWN ∨ TRUE = TRUE */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE (age > 10 OR NULL) AND name = 'Alice'", 1);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE (age > 10 AND NULL) OR name = 'Alice'", 1);
+}
+
+/* =================================================================
+ * 23.5 NULL / three-valued logic / IS NULL
+ * ================================================================= */
+static void test_null_3vl(void) {
+    printf("--- NULL / three-valued logic / IS NULL\n");
+
+    /* IS NULL / IS NOT NULL (empty CSV cells evaluate to NULL) */
+    test_query("SELECT name FROM 'query/data/nulls.csv' WHERE name IS NULL", 1);
+    test_query("SELECT name FROM 'query/data/nulls.csv' WHERE name IS NOT NULL", 2);
+    test_query("SELECT id FROM 'query/data/nulls.csv' WHERE note IS NULL", 1);
+    test_query_value("SELECT COUNT(name) FROM 'query/data/nulls.csv'", "2");
+
+    /* Comparison with NULL yields UNKNOWN, so WHERE rejects the row... */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE name = NULL", 0);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE name <> NULL", 0);
+    /* ...and NOT UNKNOWN stays UNKNOWN (previously flipped to TRUE) */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE NOT (name = NULL)", 0);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE NOT (name <> NULL)", 0);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE NOT (age BETWEEN NULL AND 30)", 0);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE NOT (name LIKE NULL)", 0);
+
+    /* IN with a NULL element: a match is TRUE; no match is UNKNOWN */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE name IN ('Alice', NULL)", 1);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE name NOT IN ('Alice', NULL)", 0);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE name IN (NULL, 'Bob', NULL)", 1);
+
+    /* NULL as a bare predicate, and NOT NULL, are UNKNOWN -> rejected */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE NULL", 0);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE NOT NULL", 0);
+
+    /* CASE WHEN: UNKNOWN conditions never match a WHEN */
+    test_query_value("SELECT CASE WHEN NULL THEN 1 ELSE 2 END FROM 'query/data/students.csv' LIMIT 1", "2");
+    test_query_value("SELECT CASE WHEN (1 = NULL) THEN 1 ELSE 2 END FROM 'query/data/students.csv' LIMIT 1", "2");
+    test_query_value("SELECT CASE WHEN NULL AND FALSE THEN 1 WHEN NULL OR TRUE THEN 2 ELSE 3 END FROM 'query/data/students.csv' LIMIT 1", "2");
+    test_query_value("SELECT CASE WHEN NULL AND TRUE THEN 1 ELSE 2 END FROM 'query/data/students.csv' LIMIT 1", "2");
+    test_query_value("SELECT CASE WHEN NULL OR FALSE THEN 1 ELSE 2 END FROM 'query/data/students.csv' LIMIT 1", "2");
+}
+
+/* =================================================================
+ * 23.75 ORDER BY ordinal / result-column references
+ * ================================================================= */
+static void test_order_by_references(void) {
+    printf("--- ORDER BY ordinal / result-column references\n");
+    test_query("SELECT name FROM 'query/data/students.csv' ORDER BY 1", 5);
+    test_query("SELECT name FROM 'query/data/students.csv' ORDER BY 1 DESC", 5);
+    test_query("SELECT name, age FROM 'query/data/students.csv' ORDER BY 2 DESC", 5);
+    test_query("SELECT name AS n FROM 'query/data/students.csv' ORDER BY n", 5);
+    test_query("SELECT name, age AS a FROM 'query/data/students.csv' ORDER BY a", 5);
+    test_query("SELECT city AS c, COUNT(*) FROM 'query/data/students.csv' GROUP BY city ORDER BY c", 3);
+    test_query("SELECT city AS c, COUNT(*) AS cnt FROM 'query/data/students.csv' GROUP BY city ORDER BY cnt DESC", 3);
+    /* out-of-range ordinal is an error, not a constant sort */
+    test_query_error("SELECT name FROM 'query/data/students.csv' ORDER BY 2", "not in the select list");
+    test_query_error("SELECT name FROM 'query/data/students.csv' ORDER BY 0", "not in the select list");
+    test_query_error("SELECT name FROM 'query/data/students.csv' ORDER BY 99", "not in the select list");
+    /* ordering correctness, not just row counts */
+    test_query_value("SELECT name FROM 'query/data/students.csv' ORDER BY 1 DESC LIMIT 1", "Eve");
+    test_query_value("SELECT name, age FROM 'query/data/students.csv' ORDER BY 2 DESC LIMIT 1", "Eve");
+    test_query_value("SELECT age FROM 'query/data/students.csv' ORDER BY 1 DESC LIMIT 1", "23");
+    /* alias resolution precedence: the matching display name wins */
+    test_query_value("SELECT name AS n, age AS name FROM 'query/data/students.csv' ORDER BY name LIMIT 1", "Charlie");
+    /* resolving to a computed select item evaluates the item expression */
+    test_query_value("SELECT age + 1 AS x FROM 'query/data/students.csv' ORDER BY x LIMIT 1", "20");
+    /* DISTINCT combined with alias/ordinal references */
+    test_query("SELECT DISTINCT city AS c FROM 'query/data/students.csv' ORDER BY c", 3);
+    test_query("SELECT DISTINCT city FROM 'query/data/students.csv' ORDER BY 1", 3);
+    /* aggregate ordinal over grouped results */
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city HAVING COUNT(*) > 1 ORDER BY 2 DESC", 2);
+    /* a non-whole number stays a constant key (no error, no ordering) */
+    test_query("SELECT name FROM 'query/data/students.csv' ORDER BY 1.5", 5);
+    /* a valid position holding '*' is a constant key: runs, order unspecified */
+    test_query("SELECT * FROM 'query/data/students.csv' ORDER BY 1", 5);
+    /* GROUP BY aliases are deliberately not resolved (non-standard extension) */
+    test_query_error("SELECT city AS c, COUNT(*) FROM 'query/data/students.csv' GROUP BY c", "Column 'c' not found");
+    test_query_error("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY 1", "must appear in the GROUP BY");
+}
+
+/* =================================================================
+ * 23.9 NULLS FIRST / LAST
+ * ================================================================= */
+static void test_nulls_first_last(void) {
+    printf("--- NULLS FIRST / LAST\n");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS LAST LIMIT 1", "Alice");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS FIRST LIMIT 1", "NULL");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC NULLS FIRST LIMIT 1", "NULL");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC NULLS LAST LIMIT 1", "Bob");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC LIMIT 1", "Bob");   /* default: NULLs last on DESC */
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name LIMIT 1", "NULL");      /* default: NULLs first on ASC */
+    test_query_error("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS", "FIRST");
+    test_query("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS LAST", 3);
+    test_query("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS FIRST", 3);
+    /* multi-key: NULL placement applies per key, remaining keys tie-break */
+    test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY note NULLS FIRST, name LIMIT 1", "1");
+    test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY note NULLS LAST, name LIMIT 1", "3");
+    /* NULL placement through the top-k heap path (LIMIT window) */
+    test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY note NULLS FIRST LIMIT 1", "1");
+    test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY note NULLS LAST LIMIT 1", "3");
+    /* numeric keys through the top-k heap path */
+    test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY id DESC LIMIT 1", "3");
+    test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY id LIMIT 1", "1");
+    /* NULLS combined with an ordinal reference */
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY 1 NULLS LAST LIMIT 1", "Alice");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY 1 NULLS FIRST LIMIT 1", "NULL");
+}
+
+/* =================================================================
+ * 23.95 standard numeric / string functions
+ * ================================================================= */
+static void test_standard_functions(void) {
+    printf("--- standard functions\n");
+    test_query_value("SELECT FLOOR(3.7) FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT CEIL(3.2) FROM 'query/data/students.csv' LIMIT 1", "4");
+    test_query_value("SELECT CEILING(3.2) FROM 'query/data/students.csv' LIMIT 1", "4");
+    test_query_value("SELECT SQRT(16) FROM 'query/data/students.csv' LIMIT 1", "4");
+    test_query_value("SELECT POWER(2, 10) FROM 'query/data/students.csv' LIMIT 1", "1024");
+    test_query_value("SELECT MOD(10, 3) FROM 'query/data/students.csv' LIMIT 1", "1");
+    test_query_value("SELECT SIGN(-5) FROM 'query/data/students.csv' LIMIT 1", "-1");
+    test_query_value("SELECT SIGN(0) FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT CHAR_LENGTH('hello') FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT CHARACTER_LENGTH('hello') FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT POSITION('ll' IN 'hello') FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT POSITION('x' IN 'hello') FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_any("SELECT RANDOM() FROM 'query/data/students.csv' LIMIT 1");
+    test_query_any("SELECT EXP(1), LN(2.7), LOG10(100), PI() FROM 'query/data/students.csv' LIMIT 1");
+    /* string functions coerce numeric arguments to their text form */
+    test_query_value("SELECT LENGTH(5) FROM 'query/data/students.csv' LIMIT 1", "1");
+    test_query_value("SELECT UPPER(5) FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT TRIM(5) FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT SUBSTR(5, 1, 1) FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT POSITION(1 IN 'abc') FROM 'query/data/students.csv' LIMIT 1", "0");
+    /* NULL propagates through function arguments */
+    test_query_value("SELECT LENGTH(NULL) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT UPPER(NULL) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT POSITION('a' IN NULL) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT FLOOR(NULL) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    /* non-numeric / out-of-domain numeric arguments yield NULL */
+    test_query_value("SELECT FLOOR('abc') FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT MOD(NULL, 3) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT MOD(5, 0) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT SQRT(-1) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT LN(0) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT LOG10(0) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    /* boundary and sign values */
+    test_query_value("SELECT SIGN(5) FROM 'query/data/students.csv' LIMIT 1", "1");
+    test_query_value("SELECT FLOOR(-3.7) FROM 'query/data/students.csv' LIMIT 1", "-4");
+    test_query_value("SELECT CEIL(-3.7) FROM 'query/data/students.csv' LIMIT 1", "-3");
+    test_query_value("SELECT FLOOR(3.0) FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT CEIL(3.0) FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT SQRT(0) FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT POWER(2, -2) FROM 'query/data/students.csv' LIMIT 1", "0.25");
+    test_query_value("SELECT MOD(7.5, 2) FROM 'query/data/students.csv' LIMIT 1", "1.5");
+    test_query_value("SELECT POSITION('' IN 'abc') FROM 'query/data/students.csv' LIMIT 1", "1");
+}
+
+/* =================================================================
+ * 24. date functions (ISO strings; extensions flagged)
+ * ================================================================= */
+static void test_date_functions(void) {
+    printf("--- date functions\n");
+    test_query_value("SELECT EXTRACT(YEAR FROM '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "2024");
+    test_query_value("SELECT EXTRACT(MONTH FROM '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT EXTRACT(DAY FROM '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "15");
+    test_query_value("SELECT EXTRACT(HOUR FROM '2024-05-15 10:30:00') FROM 'query/data/students.csv' LIMIT 1", "10");
+    test_query_value("SELECT EXTRACT(SECOND FROM '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT EXTRACT(QUARTER FROM '2024-08-15') FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT EXTRACT(YEAR FROM 'not a date') FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT DATE '2024-05-15' FROM 'query/data/students.csv' LIMIT 1", "2024-05-15");
+    test_query_value("SELECT TIMESTAMP '2024-05-15 10:30:00' FROM 'query/data/students.csv' LIMIT 1", "2024-05-15 10:30:00");
+    test_query_error("SELECT DATE 'bogus' FROM 'query/data/students.csv'", "Invalid date/time literal");
+    test_query_error("SELECT EXTRACT(FORTNIGHT FROM '2024-05-15') FROM 'query/data/students.csv'", "Unknown EXTRACT field");
+    /* extension forms (documented, not ISO standard) */
+    test_query_value("SELECT YEAR('2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "2024");
+    test_query_value("SELECT MONTH('2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT DAY('2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "15");
+    test_query_value("SELECT DATEDIFF('2024-05-20', '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "5");
+    test_query_value("SELECT DATEDIFF('2025-01-01', '2024-12-31') FROM 'query/data/students.csv' LIMIT 1", "1");
+    test_query_value("SELECT DATEDIFF('2024-03-01', '2024-02-28') FROM 'query/data/students.csv' LIMIT 1", "2");
+    test_query_any("SELECT CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, LOCALTIME, LOCALTIMESTAMP, NOW() FROM 'query/data/students.csv' LIMIT 1");
+    /* dates as strings compare chronologically */
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE '2024-05-15' > '2024-01-01'", 5);
+    test_query("SELECT name FROM 'query/data/students.csv' WHERE '2024-05-15' < '2024-01-01'", 0);
+    /* EXTRACT edges: time fields on date-only strings, NULL/non-string values */
+    test_query_value("SELECT EXTRACT(MINUTE FROM '2024-05-15 10:30:00') FROM 'query/data/students.csv' LIMIT 1", "30");
+    test_query_value("SELECT EXTRACT(HOUR FROM '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT EXTRACT(YEAR FROM NULL) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT EXTRACT(YEAR FROM 5) FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT EXTRACT(year FROM '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "2024");
+    /* date-range validation */
+    test_query_value("SELECT EXTRACT(DAY FROM '2024-02-29') FROM 'query/data/students.csv' LIMIT 1", "29");
+    test_query_value("SELECT EXTRACT(DAY FROM '2023-02-29') FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT EXTRACT(DAY FROM '2024-13-01') FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT EXTRACT(DAY FROM '2024-05-15 25:00:00') FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    /* TIME literal + malformed literals are parse errors */
+    test_query_value("SELECT TIME '12:30:00' FROM 'query/data/students.csv' LIMIT 1", "12:30:00");
+    test_query_error("SELECT TIME 'bogus' FROM 'query/data/students.csv'", "Invalid date/time literal");
+    test_query_error("SELECT TIMESTAMP 'bogus' FROM 'query/data/students.csv'", "Invalid date/time literal");
+    /* DATEDIFF edges */
+    test_query_value("SELECT DATEDIFF('2024-05-15', '2024-05-20') FROM 'query/data/students.csv' LIMIT 1", "-5");
+    test_query_value("SELECT DATEDIFF('2024-05-15', '2024-05-15') FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT DATEDIFF('x', '2024-01-01') FROM 'query/data/students.csv' LIMIT 1", "NULL");
+    test_query_value("SELECT YEAR('not a date') FROM 'query/data/students.csv' LIMIT 1", "NULL");
 }
 
 /* =================================================================
@@ -606,6 +830,7 @@ int main(void) {
     test_qualified_identifier();
     test_quoted_identifier();
     test_literals();
+    test_constant_folding();
     test_parenthesized_expr();
     test_scalar_subquery();
     test_search_not();
@@ -614,6 +839,11 @@ int main(void) {
     test_search_between();
     test_search_like();
     test_search_and_or();
+    test_null_3vl();
+    test_order_by_references();
+    test_nulls_first_last();
+    test_standard_functions();
+    test_date_functions();
     test_paren_search_condition();
     test_bare_expression_condition();
     test_set_op();

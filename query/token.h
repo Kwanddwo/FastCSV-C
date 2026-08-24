@@ -15,6 +15,7 @@ typedef enum {
     TOKEN_BETWEEN,
     TOKEN_LIKE,
     TOKEN_ILIKE,
+    TOKEN_IS,
     TOKEN_DISTINCT,
     TOKEN_AS,
     TOKEN_NULL,
@@ -29,10 +30,24 @@ typedef enum {
     TOKEN_BY,
     TOKEN_ASC,
     TOKEN_DESC,
+    TOKEN_NULLS,
+    TOKEN_FIRST,
+    TOKEN_LAST,
     TOKEN_LIMIT,
     TOKEN_OFFSET,
     TOKEN_GROUP,
     TOKEN_HAVING,
+
+    /* Datetime keywords */
+    TOKEN_DATE,
+    TOKEN_TIME,
+    TOKEN_TIMESTAMP,
+    TOKEN_CURRENT_DATE,
+    TOKEN_CURRENT_TIME,
+    TOKEN_CURRENT_TIMESTAMP,
+    TOKEN_LOCALTIME,
+    TOKEN_LOCALTIMESTAMP,
+    TOKEN_EXTRACT,
 
     /* Multi-char operators */
     TOKEN_EQUAL,

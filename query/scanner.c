@@ -71,6 +71,7 @@ static TokenType keyword_type(const char *start, int length) {
     switch (length) {
         case 2:
             if (str_nieq(start, "IN", 2)) return TOKEN_IN;
+            if (str_nieq(start, "IS", 2)) return TOKEN_IS;
             if (str_nieq(start, "OR", 2)) return TOKEN_OR;
             if (str_nieq(start, "AS", 2)) return TOKEN_AS;
             if (str_nieq(start, "BY", 2)) return TOKEN_BY;
@@ -91,6 +92,9 @@ static TokenType keyword_type(const char *start, int length) {
             if (str_nieq(start, "THEN", 4)) return TOKEN_THEN;
             if (str_nieq(start, "ELSE", 4)) return TOKEN_ELSE;
             if (str_nieq(start, "DESC", 4)) return TOKEN_DESC;
+            if (str_nieq(start, "LAST", 4)) return TOKEN_LAST;
+            if (str_nieq(start, "DATE", 4)) return TOKEN_DATE;
+            if (str_nieq(start, "TIME", 4)) return TOKEN_TIME;
             break;
         case 5:
             if (str_nieq(start, "WHERE", 5)) return TOKEN_WHERE;
@@ -99,6 +103,8 @@ static TokenType keyword_type(const char *start, int length) {
             if (str_nieq(start, "ORDER", 5)) return TOKEN_ORDER;
             if (str_nieq(start, "LIMIT", 5)) return TOKEN_LIMIT;
             if (str_nieq(start, "GROUP", 5)) return TOKEN_GROUP;
+            if (str_nieq(start, "FIRST", 5)) return TOKEN_FIRST;
+            if (str_nieq(start, "NULLS", 5)) return TOKEN_NULLS;
             break;
         case 6:
             if (str_nieq(start, "SELECT", 6)) return TOKEN_SELECT;
@@ -107,9 +113,24 @@ static TokenType keyword_type(const char *start, int length) {
             break;
         case 7:
             if (str_nieq(start, "BETWEEN", 7)) return TOKEN_BETWEEN;
+            if (str_nieq(start, "EXTRACT", 7)) return TOKEN_EXTRACT;
             break;
         case 8:
             if (str_nieq(start, "DISTINCT", 8)) return TOKEN_DISTINCT;
+            break;
+        case 9:
+            if (str_nieq(start, "LOCALTIME", 9)) return TOKEN_LOCALTIME;
+            if (str_nieq(start, "TIMESTAMP", 9)) return TOKEN_TIMESTAMP;
+            break;
+        case 12:
+            if (str_nieq(start, "CURRENT_DATE", 12)) return TOKEN_CURRENT_DATE;
+            if (str_nieq(start, "CURRENT_TIME", 12)) return TOKEN_CURRENT_TIME;
+            break;
+        case 14:
+            if (str_nieq(start, "LOCALTIMESTAMP", 14)) return TOKEN_LOCALTIMESTAMP;
+            break;
+        case 17:
+            if (str_nieq(start, "CURRENT_TIMESTAMP", 17)) return TOKEN_CURRENT_TIMESTAMP;
             break;
     }
     return TOKEN_IDENTIFIER;

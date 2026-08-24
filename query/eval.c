@@ -3,6 +3,7 @@
  * and the recursive eval_expr tree walk. Split out of executor.c. */
 #include "eval.h"
 #include "aggregate.h"
+#include "date.h"
 #include "str_util.h"
 #include <string.h>
 #include <stdio.h>
@@ -369,16 +370,166 @@ static EvalResult fn_round(EvalCtx *ctx, ExprNode **args, int arg_count) {
     return eval_result_num(round(v * mult) / mult);
 }
 
+/* ===== Standard numeric functions (ISO/IEC 9075-2:2008, T721) ===== */
+
+static EvalResult fn_floor(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    return eval_result_num(floor(v));
+}
+
+static EvalResult fn_ceil(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    return eval_result_num(ceil(v));
+}
+
+static EvalResult fn_sqrt(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    if (v < 0.0) return eval_result_null();
+    return eval_result_num(sqrt(v));
+}
+
+static EvalResult fn_power(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double x, y;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &x, &out)) return out;
+    if (!eval_num_arg(ctx, args, arg_count, 1, &y, &out)) return out;
+    return eval_result_num(pow(x, y));
+}
+
+static EvalResult fn_mod(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double x, y;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &x, &out)) return out;
+    if (!eval_num_arg(ctx, args, arg_count, 1, &y, &out)) return out;
+    if (y == 0.0) return eval_result_null();
+    return eval_result_num(fmod(x, y));
+}
+
+static EvalResult fn_sign(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    if (v < 0.0) return eval_result_num(-1.0);
+    if (v > 0.0) return eval_result_num(1.0);
+    return eval_result_num(0.0);
+}
+
+static EvalResult fn_random(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    (void)ctx; (void)args; (void)arg_count;
+    return eval_result_num((double)rand() / (double)RAND_MAX);
+}
+
+static EvalResult fn_exp(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    return eval_result_num(exp(v));
+}
+
+static EvalResult fn_ln(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    if (v <= 0.0) return eval_result_null();
+    return eval_result_num(log(v));
+}
+
+static EvalResult fn_log10(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    double v;
+    EvalResult out;
+    if (!eval_num_arg(ctx, args, arg_count, 0, &v, &out)) return out;
+    if (v <= 0.0) return eval_result_null();
+    return eval_result_num(log10(v));
+}
+
+static EvalResult fn_pi(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    (void)ctx; (void)args; (void)arg_count;
+    return eval_result_num(4.0 * atan(1.0));
+}
+
+/* ===== Date extensions (documented, not ISO standard) ===== */
+
+static EvalResult fn_now(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    (void)args; (void)arg_count;
+    return eval_datetime_value(DT_CURRENT_TIMESTAMP, ctx->tmp);
+}
+
+static EvalResult fn_date_part(EvalCtx *ctx, ExprNode **args, int arg_count,
+                               const char *field) {
+    const char *s;
+    EvalResult out;
+    if (!eval_str_arg(ctx, args, arg_count, 0, &s, &out)) return out;
+    EvalResult v = eval_result_str(s);
+    return eval_date_part(field, &v);
+}
+
+static EvalResult fn_year(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    return fn_date_part(ctx, args, arg_count, "YEAR");
+}
+
+static EvalResult fn_month(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    return fn_date_part(ctx, args, arg_count, "MONTH");
+}
+
+static EvalResult fn_day(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    return fn_date_part(ctx, args, arg_count, "DAY");
+}
+
+static EvalResult fn_datediff(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    const char *a, *b;
+    EvalResult out;
+    if (!eval_str_arg(ctx, args, arg_count, 0, &a, &out)) return out;
+    if (!eval_str_arg(ctx, args, arg_count, 1, &b, &out)) return out;
+    EvalResult ea = eval_result_str(a);
+    EvalResult eb = eval_result_str(b);
+    return eval_datediff(&ea, &eb);
+}
+
+/* ===== Standard POSITION(sub IN str) ===== */
+static EvalResult fn_position(EvalCtx *ctx, ExprNode **args, int arg_count) {
+    const char *sub, *str;
+    EvalResult out;
+    if (!eval_str_arg(ctx, args, arg_count, 0, &sub, &out)) return out;
+    if (!eval_str_arg(ctx, args, arg_count, 1, &str, &out)) return out;
+    const char *hit = strstr(str, sub);
+    if (hit == NULL) return eval_result_num(0.0);
+    return eval_result_num((double)(hit - str + 1));
+}
+
 static const FuncDef funcs[] = {
     { "UPPER", fn_upper }, { "UCASE", fn_upper },
     { "LOWER", fn_lower }, { "LCASE", fn_lower },
-    { "LENGTH", fn_length },
+    { "LENGTH", fn_length }, { "CHAR_LENGTH", fn_length },
+    { "CHARACTER_LENGTH", fn_length },
     { "TRIM", fn_trim },
     { "SUBSTR", fn_substr }, { "SUBSTRING", fn_substr },
     { "CONCAT", fn_concat },
     { "COALESCE", fn_coalesce }, { "IFNULL", fn_coalesce },
+    { "POSITION", fn_position },
     { "ABS", fn_abs },
     { "ROUND", fn_round },
+    { "FLOOR", fn_floor },
+    { "CEIL", fn_ceil }, { "CEILING", fn_ceil },
+    { "SQRT", fn_sqrt },
+    { "POWER", fn_power },
+    { "MOD", fn_mod },
+    { "SIGN", fn_sign },
+    { "RANDOM", fn_random },
+    { "EXP", fn_exp },
+    { "LN", fn_ln },
+    { "LOG10", fn_log10 },
+    { "PI", fn_pi },
+    { "NOW", fn_now },
+    { "YEAR", fn_year },
+    { "MONTH", fn_month },
+    { "DAY", fn_day },
+    { "DATEDIFF", fn_datediff },
 };
 
 static EvalResult eval_function(const char *name, ExprNode **args, int arg_count,
@@ -460,7 +611,7 @@ static EvalResult eval_cmp(ExprNode *node, EvalCtx *ctx, CmpOp op) {
     if (eval_result_is_error(&l)) return l;
     EvalResult r = eval_expr(node->right, ctx);
     if (eval_result_is_error(&r)) return r;
-    if (l.is_null || r.is_null) return eval_result_num(0.0);
+    if (l.is_null || r.is_null) return eval_result_null();   /* UNKNOWN, not FALSE */
     int cmp = eval_result_compare(&l, &r);
     bool res;
     switch (op) {
@@ -479,11 +630,26 @@ typedef enum { LOGIC_AND, LOGIC_OR } LogicOp;
 static EvalResult eval_logic(ExprNode *node, EvalCtx *ctx, LogicOp op) {
     EvalResult l = eval_expr(node->left, ctx);
     if (eval_result_is_error(&l)) return l;
-    if (op == LOGIC_AND && !eval_result_is_true(&l)) return eval_result_num(0.0);
-    if (op == LOGIC_OR && eval_result_is_true(&l)) return eval_result_num(1.0);
+    /* Short-circuit when the left operand determines the result. */
+    if (op == LOGIC_AND && !l.is_null && !eval_result_is_true(&l))
+        return eval_result_num(0.0);
+    if (op == LOGIC_OR && !l.is_null && eval_result_is_true(&l))
+        return eval_result_num(1.0);
+
     EvalResult r = eval_expr(node->right, ctx);
     if (eval_result_is_error(&r)) return r;
-    return eval_result_num((double)eval_result_is_true(&r));
+
+    /* Three-valued truth tables: UNKNOWN is only overridden by a decisive
+       operand (FALSE for AND, TRUE for OR); otherwise it propagates. */
+    if (op == LOGIC_AND) {
+        if (!r.is_null && !eval_result_is_true(&r)) return eval_result_num(0.0);
+        if (l.is_null || r.is_null) return eval_result_null();
+        return eval_result_num(1.0);
+    } else {
+        if (!r.is_null && eval_result_is_true(&r)) return eval_result_num(1.0);
+        if (l.is_null || r.is_null) return eval_result_null();
+        return eval_result_num(0.0);
+    }
 }
 
 static EvalResult eval_unary_num(ExprNode *node, EvalCtx *ctx, bool negate) {
@@ -499,7 +665,7 @@ static EvalResult eval_like(ExprNode *node, EvalCtx *ctx, bool case_insensitive)
     if (eval_result_is_error(&v)) return v;
     EvalResult p = eval_expr(node->right, ctx);
     if (eval_result_is_error(&p)) return p;
-    if (v.is_null || p.is_null) return eval_result_num(0.0);
+    if (v.is_null || p.is_null) return eval_result_null();   /* UNKNOWN, not FALSE */
     const char *val_str = eval_result_to_string(&v, ctx->tmp);
     const char *pat_str = eval_result_to_string(&p, ctx->tmp);
     return eval_result_num((double)like_match(val_str, pat_str, case_insensitive));
@@ -508,12 +674,12 @@ static EvalResult eval_like(ExprNode *node, EvalCtx *ctx, bool case_insensitive)
 static EvalResult eval_between(ExprNode *node, EvalCtx *ctx) {
     EvalResult v = eval_expr(node->left, ctx);
     if (eval_result_is_error(&v)) return v;
-    if (v.is_null) return eval_result_num(0.0);
+    if (v.is_null) return eval_result_null();   /* UNKNOWN, not FALSE */
     EvalResult s = eval_expr(node->right, ctx);
     if (eval_result_is_error(&s)) return s;
     EvalResult e = eval_expr(node->mid, ctx);
     if (eval_result_is_error(&e)) return e;
-    if (s.is_null || e.is_null) return eval_result_num(0.0);
+    if (s.is_null || e.is_null) return eval_result_null();
     return eval_result_num((double)(eval_result_compare(&s, &v) <= 0 &&
                                     eval_result_compare(&v, &e) <= 0));
 }
@@ -524,26 +690,25 @@ static EvalResult eval_in(ExprNode *node, EvalCtx *ctx, bool negate) {
     }
     EvalResult lhs = eval_expr(node->left, ctx);
     if (eval_result_is_error(&lhs)) return lhs;
-    if (lhs.is_null) return eval_result_num(0.0);
-    if (negate) {
-        bool found = false;
-        for (int i = 0; i < node->arg_count; i++) {
-            EvalResult rhs = eval_expr(node->args[i], ctx);
-            if (eval_result_is_error(&rhs)) return rhs;
-            if (!rhs.is_null && eval_result_compare(&lhs, &rhs) == 0) {
-                found = true;
-                break;
-            }
-        }
-        return eval_result_num((double)(!found));
-    }
+    if (lhs.is_null) return eval_result_null();   /* UNKNOWN, not FALSE */
+
+    bool found = false;
+    bool saw_null = false;
     for (int i = 0; i < node->arg_count; i++) {
         EvalResult rhs = eval_expr(node->args[i], ctx);
         if (eval_result_is_error(&rhs)) return rhs;
-        if (!rhs.is_null && eval_result_compare(&lhs, &rhs) == 0)
-            return eval_result_num(1.0);
+        if (rhs.is_null) {
+            saw_null = true;                      /* may force UNKNOWN below */
+        } else if (eval_result_compare(&lhs, &rhs) == 0) {
+            found = true;
+            break;
+        }
     }
-    return eval_result_num(0.0);
+    if (found) return eval_result_num(negate ? 0.0 : 1.0);
+    /* No match but a NULL was in the list: the result is UNKNOWN, and
+       NOT IN keeps it UNKNOWN (NOT UNKNOWN = UNKNOWN). */
+    if (saw_null) return eval_result_null();
+    return eval_result_num(negate ? 1.0 : 0.0);
 }
 
 static EvalResult eval_case(ExprNode *node, EvalCtx *ctx) {
@@ -670,7 +835,20 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
         case EXPR_NOT: {
             EvalResult v = eval_expr(node->left, ctx);
             if (eval_result_is_error(&v)) return v;
+            if (v.is_null) return eval_result_null();   /* NOT UNKNOWN = UNKNOWN */
             return eval_result_num((double)(!eval_result_is_true(&v)));
+        }
+
+        /* ===== IS NULL / IS NOT NULL (never yield UNKNOWN) ===== */
+        case EXPR_IS_NULL: {
+            EvalResult v = eval_expr(node->left, ctx);
+            if (eval_result_is_error(&v)) return v;
+            return eval_result_num(v.is_null ? 1.0 : 0.0);
+        }
+        case EXPR_IS_NOT_NULL: {
+            EvalResult v = eval_expr(node->left, ctx);
+            if (eval_result_is_error(&v)) return v;
+            return eval_result_num(v.is_null ? 0.0 : 1.0);
         }
 
         /* ===== IN / NOT IN ===== */
@@ -684,6 +862,19 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
         /* ===== LIKE / ILIKE ===== */
         case EXPR_LIKE:  return eval_like(node, ctx, false);
         case EXPR_ILIKE: return eval_like(node, ctx, true);
+
+        /* ===== Datetime ===== */
+        case EXPR_DATETIME_VALUE:
+            return eval_datetime_value((int)node->num_value, ctx->tmp);
+
+        case EXPR_DATE_LITERAL:
+            return eval_result_str(node->str_value ? node->str_value : "");
+
+        case EXPR_EXTRACT: {
+            EvalResult v = eval_expr(node->left, ctx);
+            if (eval_result_is_error(&v)) return v;
+            return eval_date_part(node->str_value, &v);
+        }
 
         /* ===== Function call ===== */
         case EXPR_FUNCTION_CALL:

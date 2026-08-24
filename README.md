@@ -130,7 +130,34 @@ Features:
 > clash with keywords: `SELECT "first name" FROM "query/data/my data.csv"`. If a table
 > name has no `.csv` extension it is opened exactly as given, and `FROM
 
+
+### SQL dialect notes
+
+- **ORDER BY** accepts result-column ordinals and names/aliases
+  (`ORDER BY 2`, `ORDER BY n`), plus `NULLS FIRST` / `NULLS LAST`
+  (`ORDER BY salary DESC NULLS FIRST`). Without `NULLS`, NULLs sort first on
+  ASC and last on DESC (implementation-defined per the standard).
+- **Three-valued logic** is implemented: comparisons with `NULL` yield
+  UNKNOWN, `NOT UNKNOWN` stays UNKNOWN, `IN`/`NOT IN` with a NULL in the list
+  yield UNKNOWN when nothing matches, and `IS NULL` / `IS NOT NULL` never
+  yield UNKNOWN.
+- **Functions**: scalar `UPPER/UCASE`, `LOWER/LCASE`, `LENGTH`/`CHAR_LENGTH`/
+  `CHARACTER_LENGTH`, `TRIM`, `SUBSTR`/`SUBSTRING`, `CONCAT`, `COALESCE`/
+  `IFNULL`, `POSITION(sub IN str)`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`,
+  `SQRT`, `POWER`, `MOD`, `SIGN`, `RANDOM`, `EXP`, `LN`, `LOG10`, `PI`;
+  aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` (with `DISTINCT`).
+- **Dates** are ISO-8601 strings (`'YYYY-MM-DD[ HH:MM:SS]'`), which compare
+  chronologically as strings. Standard syntax: `CURRENT_DATE`,
+  `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `LOCALTIME`, `LOCALTIMESTAMP`,
+  `DATE '...'`, `TIME '...'`, `TIMESTAMP '...'`, and
+  `EXTRACT(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND FROM expr)`. Extensions
+  (not ISO): `NOW()`, `YEAR()`/`MONTH()`/`DAY()` function forms,
+  `DATEDIFF(date1, date2)`, `EXTRACT(QUARTER FROM ...)`.
+- **Not supported**: GROUP BY ordinals/aliases (non-standard extensions),
+  subqueries, JOINs, and a dedicated date/interval type.
+
 ## 🚀 Quick Start
+
 
 ### Reading CSV Files
 

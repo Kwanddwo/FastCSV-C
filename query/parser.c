@@ -4,8 +4,10 @@
 #include "parser.h"
 #include "parser_internal.h"
 #include "scanner.h"
+#include "str_util.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <limits.h>
 
 #define MAX_PARSE_ERRORS 50
@@ -279,6 +281,41 @@ static bool ensure_capacity(Parser *parser, void **array, int *capacity,
     return true;
 }
 
+/* Resolve an ORDER BY reference to a select item when possible:
+   - a whole-number literal N in [1, item_count] is an ordinal: substitute
+     items[N-1].expr (the standard's position reference; nodes are read-only
+     during execution, so sharing the pointer is safe);
+   - an identifier matching a non-star select item's display name (alias or
+     result-column name) substitutes that item's expression.
+   Anything else is returned unchanged (validated as a column or constant
+   later). A whole-number literal outside the select list is an error. */
+static ExprNode* resolve_select_ref(Parser *parser, SelectStmt *stmt, ExprNode *node) {
+    if (node->type == EXPR_LITERAL_NUMBER) {
+        double v = node->num_value;
+        if (v >= -1e9 && v <= 1e9 && v == (double)(int)v) {
+            int pos = (int)v;
+            if (pos < 1 || pos > stmt->item_count) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "SELECT position %d is not in the select list.", pos);
+                record_error(parser, buf, parser->previous.line, parser->previous.column);
+            } else if (stmt->items[pos - 1].expr->type != EXPR_STAR) {
+                return stmt->items[pos - 1].expr;
+            }
+            /* A valid position holding '*' is left as a constant key: the
+               star-expanded output columns are only known after expansion. */
+        }
+    } else if (node->type == EXPR_COLUMN_REF && node->str_value != NULL) {
+        for (int i = 0; i < stmt->item_count; i++) {
+            if (stmt->items[i].expr->type == EXPR_STAR) continue;
+            if (stmt->items[i].name != NULL &&
+                str_ieq(stmt->items[i].name, node->str_value)) {
+                return stmt->items[i].expr;
+            }
+        }
+    }
+    return node;
+}
+
 static void parse_order_by(Parser *parser, SelectStmt *stmt) {
     if (!match(parser, TOKEN_ORDER)) return;
 
@@ -290,10 +327,22 @@ static void parse_order_by(Parser *parser, SelectStmt *stmt) {
 
     for (;;) {
         ExprNode *expr = parse_expression(parser);
+        expr = resolve_select_ref(parser, stmt, expr);
 
         bool asc = true;
         if (match(parser, TOKEN_ASC)) { asc = true; }
         else if (match(parser, TOKEN_DESC)) { asc = false; }
+
+        int nulls = 0;
+        if (match(parser, TOKEN_NULLS)) {
+            if (match(parser, TOKEN_FIRST)) {
+                nulls = 1;
+            } else if (match(parser, TOKEN_LAST)) {
+                nulls = 2;
+            } else {
+                error_at_current(parser, "Expected 'FIRST' or 'LAST' after 'NULLS'.");
+            }
+        }
 
         if (!ensure_capacity(parser, (void**)&items, &capacity, count,
                              sizeof(OrderByItem))) {
@@ -302,6 +351,7 @@ static void parse_order_by(Parser *parser, SelectStmt *stmt) {
 
         items[count].expr = expr;
         items[count].asc = asc;
+        items[count].nulls = nulls;
         count++;
 
         if (!match(parser, TOKEN_COMMA)) break;

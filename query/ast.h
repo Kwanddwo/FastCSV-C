@@ -50,6 +50,13 @@ typedef enum {
     EXPR_BETWEEN,
     EXPR_LIKE,
     EXPR_ILIKE,
+    EXPR_IS_NULL,
+    EXPR_IS_NOT_NULL,
+
+    /* Datetime */
+    EXPR_DATETIME_VALUE,   /* CURRENT_DATE etc.; kind in num_value */
+    EXPR_DATE_LITERAL,     /* DATE / TIME / TIMESTAMP '...' */
+    EXPR_EXTRACT,          /* EXTRACT(field FROM value); field in str_value */
 
     /* Complex */
     EXPR_FUNCTION_CALL,
@@ -105,6 +112,7 @@ typedef struct {
 typedef struct {
     ExprNode *expr;
     bool asc;       /* true = ASC (default), false = DESC */
+    int nulls;      /* 0 = unspecified, 1 = NULLS FIRST, 2 = NULLS LAST */
 } OrderByItem;
 
 /* ===== SELECT statement ===== */

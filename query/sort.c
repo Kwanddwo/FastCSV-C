@@ -13,6 +13,19 @@
 int cmp_keys(const EvalResult *a, const EvalResult *b, int k,
                     const OrderByItem *order_by) {
     for (int j = 0; j < k; j++) {
+        bool an = a[j].is_null;
+        bool bn = b[j].is_null;
+        if (an || bn) {
+            if (an && bn) continue;   /* both NULL: equal on this key */
+            /* NULL placement is direction-independent: an explicit
+               NULLS FIRST/LAST wins over ASC/DESC; unspecified keeps the
+               historical default (ASC -> NULLs first, DESC -> NULLs last). */
+            int nulls_first;
+            if (order_by[j].nulls == 1) nulls_first = 1;
+            else if (order_by[j].nulls == 2) nulls_first = 0;
+            else nulls_first = order_by[j].asc;
+            return an ? (nulls_first ? -1 : 1) : (nulls_first ? 1 : -1);
+        }
         int cmp = eval_result_compare(&a[j], &b[j]);
         if (cmp != 0)
             return order_by[j].asc ? cmp : -cmp;

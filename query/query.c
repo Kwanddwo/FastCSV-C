@@ -1,5 +1,6 @@
 #include "query.h"
 #include "executor.h"
+#include "fold.h"
 #include "str_util.h"
 
 #include <string.h>
@@ -248,6 +249,10 @@ QueryResult query_execute(CSVConfig *config, const char *sql, Arena *arena) {
         arena_destroy(&parse_arena);
         return result;
     }
+
+    /* Fold constant subtrees once (allocated in the parse arena, which stays
+       alive through execution) so they are never re-evaluated per row. */
+    fold_constants(stmt, &parse_arena);
 
     /* Per-row evaluation scratch, reset by the executor between records. */
     Arena tmp_arena;
