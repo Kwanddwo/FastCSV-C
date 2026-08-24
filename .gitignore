@@ -45,5 +45,5 @@ scan-build-results/
 test_*.csv
 
 # Benchmark suite outputs (generated at runtime)
-benchmark/data/
-benchmark/results/
+**/benchmark/data/
+**/benchmark/results/
