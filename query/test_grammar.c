@@ -270,7 +270,8 @@ static void test_unary(void) {
     printf("--- unary + / -\n");
     test_query_any("SELECT -age FROM 'query/data/students.csv'");
     test_query_any("SELECT +age FROM 'query/data/students.csv'");
-    test_query_any("SELECT --age FROM 'query/data/students.csv'");
+    /* Double negation needs the space: "--" now starts a comment */
+    test_query_any("SELECT - -age FROM 'query/data/students.csv'");
     test_query_any("SELECT -age + 1 FROM 'query/data/students.csv'");
 }
 
@@ -807,6 +808,38 @@ static void test_error_recovery(void) {
     test_query_error("SELECT FakeCol FROM 'query/data/students.csv'", "Column");
 }
 
+static void test_comments(void) {
+    printf("--- SQL comments\n");
+
+    /* Line comments: trailing, leading, and between tokens */
+    test_query("SELECT * FROM 'query/data/students.csv' -- trailing note", 5);
+    test_query("-- leading note\nSELECT * FROM 'query/data/students.csv'", 5);
+    test_query("SELECT -- between tokens\n* FROM 'query/data/students.csv'", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' -- ORDER BY nothing", 5);
+
+    /* Block comments: inline, multi-line, and inside WHERE */
+    test_query("SELECT /* x */ * FROM 'query/data/students.csv'", 5);
+    test_query("SELECT /* a\nb */ * FROM 'query/data/students.csv'", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' /* ; */", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' WHERE city = 'NYC' /* or LA */", 2);
+
+    /* Apostrophes and keywords inside comments must be ignored */
+    test_query("SELECT * FROM 'query/data/students.csv' -- it's fine", 5);
+    test_query("SELECT * FROM 'query/data/students.csv' -- CONCAT(DISTINCT LIMIT 0", 5);
+
+    /* Comment markers inside string literals are not comments */
+    test_query("SELECT 'a -- b' FROM 'query/data/students.csv'", 5);
+    test_query("SELECT 'a /* b' FROM 'query/data/students.csv'", 5);
+
+    /* A lone '-' or '/' keeps its operator meaning */
+    test_query_value("SELECT 5 - -3 FROM 'query/data/students.csv' LIMIT 1", "8");
+    test_query_any("SELECT 10 / 2 FROM 'query/data/students.csv'");
+
+    /* An unterminated block comment is a syntax error */
+    test_query_error("SELECT * /* note FROM 'query/data/students.csv'", "Unterminated comment");
+    test_query_parse_error_count("SELECT * /* note FROM 'query/data/students.csv'", 1);
+}
+
 /* =================================================================
  * main
  * ================================================================= */
@@ -851,6 +884,7 @@ int main(void) {
     test_set_op();
     test_other_statements();
     test_error_recovery();
+    test_comments();
 
     printf("\n=== Results ===\n");
     printf("PASS: %d   FAIL: %d   TOTAL: %d\n", pass, fail, pass + fail);

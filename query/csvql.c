@@ -241,43 +241,137 @@ static char* trim_ws(char *s) {
     return s;
 }
 
-/* True when the buffered statement is finished: the last significant
- * character outside of a string literal is ';'. An unclosed single-quote
- * keeps reading (strings may span lines). */
-static bool statement_complete(const char *buf) {
-    bool in_string = false;
-    int last_non_space = -1;
-    for (int i = 0; buf[i]; i++) {
-        char c = buf[i];
-        if (c == '\'') in_string = !in_string;
-        if (!in_string && !isspace((unsigned char)c)) last_non_space = i;
+/* ===== Comment-aware text scanning =====
+ * The scanner handles comments inside SQL, but the shell also reads raw SQL
+ * text: deciding when a statement is complete, splitting ';'-separated
+ * statements, and folding history lines. All three must understand "--"
+ * line comments and "slash-star" block comments, or an apostrophe or ';'
+ * inside a comment would break them. */
+typedef enum {
+    SCAN_NORMAL,
+    SCAN_STRING,
+    SCAN_LINE_COMMENT,
+    SCAN_BLOCK_COMMENT,
+} ScanState;
+
+/* Classify buf[i] (with lookahead at buf[i+1]) and update *st for what
+   follows. Returns the number of characters consumed (1 or 2; doubled
+   quotes and the closing "star slash" consume both) and sets *significant
+   when the character counts as significant, i.e. outside strings and
+   comments. */
+static int scan_char(ScanState *st, char c, char next, bool *significant) {
+    *significant = false;
+    switch (*st) {
+        case SCAN_LINE_COMMENT:
+            if (c == '\n') *st = SCAN_NORMAL;
+            return 1;
+        case SCAN_BLOCK_COMMENT:
+            if (c == '*' && next == '/') {
+                *st = SCAN_NORMAL;
+                return 2;
+            }
+            return 1;
+        case SCAN_STRING:
+            if (c == '\'') {
+                if (next == '\'') return 2;   /* '' escape stays in the string */
+                *st = SCAN_NORMAL;
+            }
+            return 1;
+        case SCAN_NORMAL:
+            if (c == '\'') { *st = SCAN_STRING; return 1; }
+            if (c == '-' && next == '-') { *st = SCAN_LINE_COMMENT; return 1; }
+            if (c == '/' && next == '*') { *st = SCAN_BLOCK_COMMENT; return 1; }
+            *significant = !isspace((unsigned char)c);
+            return 1;
     }
-    if (in_string) return false;
-    if (last_non_space < 0) return true; /* whitespace only */
-    return buf[last_non_space] == ';';
+    return 1;
+}
+
+/* True when the trimmed line is only a comment: it behaves like a blank
+   line in the REPL (it executes the pending statement). A "--" line is
+   always a comment; a "slash-star" line only when the block closes on the
+   line, since an open block comment can span lines. */
+static bool comment_only_line(const char *t) {
+    if (str_nieq(t, "--", 2)) return true;
+    if (str_nieq(t, "/*", 2)) {
+        for (const char *q = t + 2; *q; q++) {
+            if (q[0] == '*' && q[1] == '/') return true;
+        }
+    }
+    return false;
+}
+
+/* True when the buffered statement is finished: the last significant
+ * character outside of string literals and comments is ';'. An unclosed
+ * single-quote or block comment keeps reading (both may span lines). */
+static bool statement_complete(const char *buf) {
+    ScanState st = SCAN_NORMAL;
+    bool seen = false;
+    bool last_semicolon = false;
+    for (int i = 0; buf[i];) {
+        bool significant;
+        int n = scan_char(&st, buf[i], buf[i + 1], &significant);
+        if (significant) {
+            seen = true;
+            last_semicolon = (buf[i] == ';');
+        }
+        i += n;
+    }
+    if (st == SCAN_STRING || st == SCAN_BLOCK_COMMENT) return false;
+    if (!seen) return true; /* whitespace/comments only */
+    return last_semicolon;
 }
 
 /* Execute one or more ';'-separated statements. arena_override bypasses the
-   query engine's result-size estimator (0 = use the estimate). */
+   query engine's result-size estimator (0 = use the estimate). Segments
+   made of only whitespace and comments are skipped. */
 static void exec_statement(CSVConfig *config, size_t arena_override, const char *stmt) {
+    ScanState st = SCAN_NORMAL;
+    const char *seg_start = stmt;
+    bool seg_has_code = false;
+
     const char *p = stmt;
     while (*p) {
-        while (*p && (isspace((unsigned char)*p) || *p == ';')) p++;
-        if (!*p) break;
+        bool significant;
+        int n = scan_char(&st, *p, p[1], &significant);
+        if (significant) seg_has_code = true;
 
-        const char *start = p;
-        bool in_string = false;
-        while (*p) {
-            if (*p == '\'') in_string = !in_string;
-            if (*p == ';' && !in_string) break;
-            p++;
+        if (*p == ';' && significant) {
+            const char *seg_end = p;
+            if (seg_has_code) {
+                while (seg_start < seg_end &&
+                       isspace((unsigned char)*seg_start)) seg_start++;
+                while (seg_end > seg_start &&
+                       isspace((unsigned char)seg_end[-1])) seg_end--;
+                if (seg_end > seg_start) {
+                    size_t seglen = (size_t)(seg_end - seg_start);
+                    char *seg = malloc(seglen + 1);
+                    memcpy(seg, seg_start, seglen);
+                    seg[seglen] = '\0';
+
+                    QueryResult res = query_execute(config, seg, arena_override);
+                    print_result(&res, seg);
+                    printf("\n");
+                    query_result_destroy(&res);
+
+                    free(seg);
+                }
+            }
+            /* ';' with no code before it is just a separator (e.g. ";;") */
+            seg_has_code = false;
+            seg_start = p + 1;
         }
+        p += n;
+    }
 
-        size_t seglen = (size_t)(p - start);
-        while (seglen > 0 && isspace((unsigned char)start[seglen - 1])) seglen--;
-        if (seglen > 0) {
+    if (seg_has_code) {
+        const char *seg_end = p;
+        while (seg_start < seg_end && isspace((unsigned char)*seg_start)) seg_start++;
+        while (seg_end > seg_start && isspace((unsigned char)seg_end[-1])) seg_end--;
+        if (seg_end > seg_start) {
+            size_t seglen = (size_t)(seg_end - seg_start);
             char *seg = malloc(seglen + 1);
-            memcpy(seg, start, seglen);
+            memcpy(seg, seg_start, seglen);
             seg[seglen] = '\0';
 
             QueryResult res = query_execute(config, seg, arena_override);
@@ -287,7 +381,6 @@ static void exec_statement(CSVConfig *config, size_t arena_override, const char 
 
             free(seg);
         }
-        if (*p == ';') p++;
     }
 }
 
@@ -381,11 +474,15 @@ static void maybe_add_history(const char *stmt) {
     while (e > copy && isspace((unsigned char)e[-1])) e--;
     *e = '\0';
     /* Fold newlines outside string literals into spaces so multi-line
-     * statements are recalled as a single line. */
-    int in_string = 0;
-    for (char *p = copy; *p; p++) {
-        if (*p == '\'') in_string = !in_string;
-        else if (*p == '\n' && !in_string) *p = ' ';
+     * statements are recalled as a single line. Newlines inside comments
+     * are left alone (comments run to the end of the line). */
+    ScanState st = SCAN_NORMAL;
+    for (char *p = copy; *p;) {
+        bool significant;
+        ScanState before = st;
+        int n = scan_char(&st, *p, p[1], &significant);
+        if (*p == '\n' && before == SCAN_NORMAL) *p = ' ';
+        p += n;
     }
     linenoiseHistoryAdd(copy);
     free(copy);
@@ -484,8 +581,9 @@ static void repl_loop(CSVConfig *config, size_t arena_override) {
         sb_append(&sb, line, strlen(line));
         sb_append(&sb, "\n", 1);
 
-        /* Execute when complete, or on a blank line (semicolon optional). */
-        bool blank_line = (*t == '\0');
+        /* Execute when complete, or on a blank/comment-only line
+           (semicolon optional). */
+        bool blank_line = (*t == '\0') || comment_only_line(t);
         if (statement_complete(sb.data) || (blank_line && sb.len > 1)) {
             maybe_add_history(sb.data);
             exec_statement(config, arena_override, sb.data);
@@ -497,6 +595,19 @@ static void repl_loop(CSVConfig *config, size_t arena_override) {
 
     free(sb.data);
     if (hist) linenoiseHistorySave(hist);
+}
+
+/* True when the text contains anything other than whitespace and comments.
+   Used to skip comment-only input in one-shot mode. */
+static bool has_significant_code(const char *s) {
+    ScanState st = SCAN_NORMAL;
+    for (const char *p = s; *p;) {
+        bool significant;
+        int n = scan_char(&st, *p, p[1], &significant);
+        if (significant) return true;
+        p += n;
+    }
+    return false;
 }
 
 /* ===== Entry point ===== */
@@ -520,6 +631,10 @@ int main(int argc, char **argv) {
     use_color = isatty(STDOUT_FILENO) && getenv("NO_COLOR") == NULL;
 
     if (argc == 2) {
+        if (!has_significant_code(argv[1])) {
+            arena_destroy(&cfg_arena);
+            return 0;
+        }
         QueryResult result = query_execute(config, argv[1], arena_override);
         print_result(&result, argv[1]);
         bool failed = result.error != NULL;

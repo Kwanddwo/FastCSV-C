@@ -223,11 +223,58 @@ static Token scan_quoted_identifier(Scanner *scanner) {
     return token;
 }
 
-Token scan_token(Scanner *scanner) {
-    skip_whitespace(scanner);
-    scanner->start = scanner->current;
+/* Skip a "--" line comment: consume to the end of the line (the newline is
+   left for skip_whitespace to count) or to end of input. */
+static void skip_line_comment(Scanner *scanner) {
+    while (!is_at_end(scanner) && peek(scanner) != '\n') {
+        advance(scanner);
+    }
+}
 
-    if (is_at_end(scanner)) return make_token(scanner, TOKEN_EOF);
+/* Skip a block comment opened with "/" followed by "*". Consumes everything
+   up to and including the closing "star slash", counting newlines. Returns
+   false (leaving an error token for the caller) when the input ends before
+   the comment closes. */
+static bool skip_block_comment(Scanner *scanner) {
+    advance(scanner);   /* consume '*' */
+    advance(scanner);   /* consume '/' */
+    for (;;) {
+        if (is_at_end(scanner)) return false;
+        if (peek(scanner) == '*' && scanner->current[1] == '/') {
+            advance(scanner);
+            advance(scanner);
+            return true;
+        }
+        if (peek(scanner) == '\n') {
+            scanner->line++;
+            scanner->column = 0;
+        }
+        advance(scanner);
+    }
+}
+
+Token scan_token(Scanner *scanner) {
+    for (;;) {
+        skip_whitespace(scanner);
+        scanner->start = scanner->current;
+
+        if (is_at_end(scanner)) return make_token(scanner, TOKEN_EOF);
+
+        /* Adjacent "--" starts a line comment, "slash-star" a block
+           comment. A lone '-' or '/' keeps its operator meaning (so
+           `a - -b` still lexes). */
+        if (peek(scanner) == '-' && scanner->current[1] == '-') {
+            skip_line_comment(scanner);
+            continue;
+        }
+        if (peek(scanner) == '/' && scanner->current[1] == '*') {
+            if (!skip_block_comment(scanner)) {
+                return error_token(scanner, "Unterminated comment.");
+            }
+            continue;
+        }
+        break;
+    }
 
     char c = advance(scanner);
 

@@ -163,6 +163,8 @@ The value is a plain byte count or a number with a `K`/`M`/`G` suffix. `$CSVQL_C
   `EXTRACT(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND FROM expr)`. Extensions
   (not ISO): `NOW()`, `YEAR()`/`MONTH()`/`DAY()` function forms,
   `DATEDIFF(date1, date2)`, `EXTRACT(QUARTER FROM ...)`.
+- **Comments** are supported in both standard forms: `--` line comments and
+  `/* ... */` block comments.
 - **Not supported**: GROUP BY ordinals/aliases (non-standard extensions),
   subqueries, JOINs, and a dedicated date/interval type.
 
