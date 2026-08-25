@@ -12,16 +12,16 @@
 #include "query/str_util.h"
 #include "deps/linenoise.h"
 
-#define QUERY_ARENA_SIZE (4 * 1024 * 1024)
 #define CFG_ARENA_SIZE (2 * 1024)
 #define CSVQL_VERSION "1.0"
 
 /* ===== Arena size resolution =====
- * The query and config arenas can be sized at runtime via environment
- * variables (CSVQL_QUERY_ARENA_SIZE, CSVQL_CONFIG_ARENA_SIZE). Accepted
- * formats: a plain byte count ("1048576") or a number with a K/M/G suffix
- * ("256K", "64M", "1G", case-insensitive). On missing/invalid input the
- * built-in default is used.
+ * The query engine sizes its own result arena per statement via a heuristic
+ * estimate (file size + query shape). CSVQL_QUERY_ARENA_SIZE bypasses the
+ * estimator with a fixed size when a query outgrows its estimate; it accepts
+ * a plain byte count ("1048576") or a number with a K/M/G suffix ("256K",
+ * "64M", "1G", case-insensitive). A missing/invalid value falls back to the
+ * estimator (0). CSVQL_CONFIG_ARENA_SIZE sizes the tiny config arena.
  */
 static size_t arena_size_from_env(const char *name, size_t default_size) {
     const char *raw = getenv(name);
@@ -148,7 +148,11 @@ static void print_result(QueryResult *result, const char *source) {
     }
 
     if (result->error) {
-        if (result->error_line > 0 || result->error_column >= 0) {
+        if (result->out_of_memory) {
+            fprintf(stderr, "%sError: Out of memory.%s (query arena: %zu bytes; "
+                    "set CSVQL_QUERY_ARENA_SIZE=<larger> to bypass the estimator)\n",
+                    red, rst, result->result_arena_size);
+        } else if (result->error_line > 0 || result->error_column >= 0) {
             fprintf(stderr, "%sError at [line %d, col %d]:%s %s\n",
                     red, result->error_line, result->error_column, rst, result->error);
             print_error_location(source, result->error_line, result->error_column);
@@ -253,24 +257,9 @@ static bool statement_complete(const char *buf) {
     return buf[last_non_space] == ';';
 }
 
-/* Run one statement, resizing the query arena when the estimated result set
-   exceeds its current capacity. The arena is reset when it already fits. */
-static QueryResult execute_sql(CSVConfig *config, Arena *query_arena, const char *sql) {
-    size_t need = query_estimate_result_size(sql);
-    if (need > query_arena->total_size) {
-        Arena fresh;
-        if (arena_create(&fresh, need) == ARENA_OK) {
-            arena_destroy(query_arena);
-            *query_arena = fresh;
-        }
-    } else {
-        arena_reset(query_arena);
-    }
-    return query_execute(config, sql, query_arena);
-}
-
-/* Execute one or more ';'-separated statements. */
-static void exec_statement(CSVConfig *config, Arena *arena, const char *stmt) {
+/* Execute one or more ';'-separated statements. arena_override bypasses the
+   query engine's result-size estimator (0 = use the estimate). */
+static void exec_statement(CSVConfig *config, size_t arena_override, const char *stmt) {
     const char *p = stmt;
     while (*p) {
         while (*p && (isspace((unsigned char)*p) || *p == ';')) p++;
@@ -291,9 +280,10 @@ static void exec_statement(CSVConfig *config, Arena *arena, const char *stmt) {
             memcpy(seg, start, seglen);
             seg[seglen] = '\0';
 
-            QueryResult res = execute_sql(config, arena, seg);
+            QueryResult res = query_execute(config, seg, arena_override);
             print_result(&res, seg);
             printf("\n");
+            query_result_destroy(&res);
 
             free(seg);
         }
@@ -425,7 +415,7 @@ static void completion_callback(const char *buf, linenoiseCompletions *lc) {
 }
 
 /* ===== REPL ===== */
-static void repl_loop(CSVConfig *config, Arena *query_arena) {
+static void repl_loop(CSVConfig *config, size_t arena_override) {
     linenoiseHistorySetMaxLen(1000);
     linenoiseSetCompletionCallback(completion_callback);
 
@@ -457,7 +447,7 @@ static void repl_loop(CSVConfig *config, Arena *query_arena) {
             }
             /* EOF (Ctrl-D) or end of piped input */
             printf("\n");
-            if (sb.len) exec_statement(config, query_arena, sb.data);
+            if (sb.len) exec_statement(config, arena_override, sb.data);
             break;
         }
 
@@ -498,7 +488,7 @@ static void repl_loop(CSVConfig *config, Arena *query_arena) {
         bool blank_line = (*t == '\0');
         if (statement_complete(sb.data) || (blank_line && sb.len > 1)) {
             maybe_add_history(sb.data);
-            exec_statement(config, query_arena, sb.data);
+            exec_statement(config, arena_override, sb.data);
             sb_reset(&sb);
         }
 
@@ -512,21 +502,15 @@ static void repl_loop(CSVConfig *config, Arena *query_arena) {
 /* ===== Entry point ===== */
 int main(int argc, char **argv) {
     Arena cfg_arena;
-    Arena query_arena;
 
     size_t cfg_size = arena_size_from_env("CSVQL_CONFIG_ARENA_SIZE", CFG_ARENA_SIZE);
-    size_t query_size = arena_size_from_env("CSVQL_QUERY_ARENA_SIZE", QUERY_ARENA_SIZE);
+    /* 0 lets the query engine size its own result arena via the estimator;
+       a nonzero value bypasses the estimator with a fixed size. */
+    size_t arena_override = arena_size_from_env("CSVQL_QUERY_ARENA_SIZE", 0);
 
     if (arena_create(&cfg_arena, cfg_size) != ARENA_OK) {
         fprintf(stderr, "Failed to create config arena "
                         "(sized %zu bytes; see CSVQL_CONFIG_ARENA_SIZE).\n", cfg_size);
-        return 1;
-    }
-
-    if (arena_create(&query_arena, query_size) != ARENA_OK) {
-        fprintf(stderr, "Failed to create query arena "
-                        "(sized %zu bytes; see CSVQL_QUERY_ARENA_SIZE).\n", query_size);
-        arena_destroy(&cfg_arena);
         return 1;
     }
 
@@ -536,25 +520,22 @@ int main(int argc, char **argv) {
     use_color = isatty(STDOUT_FILENO) && getenv("NO_COLOR") == NULL;
 
     if (argc == 2) {
-        QueryResult result = execute_sql(config, &query_arena, argv[1]);
+        QueryResult result = query_execute(config, argv[1], arena_override);
         print_result(&result, argv[1]);
-        if (result.error) {
-            arena_destroy(&cfg_arena);
-            arena_destroy(&query_arena);
-            return 1;
-        }
+        bool failed = result.error != NULL;
+        query_result_destroy(&result);
+        arena_destroy(&cfg_arena);
+        return failed ? 1 : 0;
     } else if (argc == 1) {
-        repl_loop(config, &query_arena);
+        repl_loop(config, arena_override);
     } else {
         fprintf(stderr, "Usage:\n");
         fprintf(stderr, "  %s            Enter interactive REPL\n", argv[0]);
         fprintf(stderr, "  %s \"<sql>\"   Run a single query and exit\n", argv[0]);
         arena_destroy(&cfg_arena);
-        arena_destroy(&query_arena);
         return 1;
     }
 
     arena_destroy(&cfg_arena);
-    arena_destroy(&query_arena);
     return 0;
 }

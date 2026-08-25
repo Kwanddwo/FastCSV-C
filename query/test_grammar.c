@@ -20,10 +20,10 @@
 static int pass, fail;
 
 /* ========== helpers ========== */
-static QueryResult run_query(const char *sql, Arena *arena) {
-    CSVConfig *cfg = csv_config_create(arena);
+static QueryResult run_query(const char *sql, Arena *cfg_arena) {
+    CSVConfig *cfg = csv_config_create(cfg_arena);
     csv_config_set_has_header(cfg, 1);
-    return query_execute(cfg, sql, arena);
+    return query_execute(cfg, sql, 0);
 }
 
 typedef enum {
@@ -37,15 +37,16 @@ typedef enum {
 
 /* Run one query and assert the expected property. Returns 1 on failure. */
 static int test_sql(const char *sql, CheckKind kind, int expect, const char *expect_sub) {
-    Arena arena;
-    ArenaResult ar = arena_create(&arena, 512 * 1024);
+    Arena cfg_arena;
+    ArenaResult ar = arena_create(&cfg_arena, 2 * 1024); /* config only; the
+        query engine sizes its own result arena via the estimator */
     if (ar != ARENA_OK) {
         printf("FAIL [arena]: %s\n", sql);
         fail++;
         return 1;
     }
 
-    QueryResult res = run_query(sql, &arena);
+    QueryResult res = run_query(sql, &cfg_arena);
     int ok = 0;
 
     switch (kind) {
@@ -112,7 +113,8 @@ static int test_sql(const char *sql, CheckKind kind, int expect, const char *exp
 
     if (ok) pass++;
     else fail++;
-    arena_destroy(&arena);
+    query_result_destroy(&res);
+    arena_destroy(&cfg_arena);
     return ok ? 0 : 1;
 }
 

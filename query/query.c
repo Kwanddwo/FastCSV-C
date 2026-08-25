@@ -10,10 +10,12 @@
 
 /* Scratch arenas owned by query_execute. The parse arena holds the AST and
    is reclaimed once execution finishes; the temp arena holds per-row
-   evaluation scratch and is reset by the executor between records. Neither
-   consumes the caller's result arena. */
+   evaluation scratch and is reset by the executor between records. The
+   result arena is created here too (sized by the estimator unless the caller
+   overrides) and returned to the caller inside QueryResult. */
 #define QUERY_PARSE_ARENA_MIN (64 * 1024)
 #define QUERY_TMP_ARENA_SIZE (4 * 1024 * 1024)
+#define QUERY_RESULT_ARENA_MIN (4 * 1024 * 1024)
 
 QueryResult query_result_init() {
     QueryResult result;
@@ -25,8 +27,17 @@ QueryResult query_result_init() {
     result.error_line = 0;
     result.error_column = -1;
     result.parse_errors = NULL;
+    memset(&result.result_arena, 0, sizeof(Arena));
+    result.out_of_memory = false;
+    result.result_arena_size = 0;
 
     return result;
+}
+
+void query_result_destroy(QueryResult *result) {
+    if (result == NULL) return;
+    arena_destroy(&result->result_arena);
+    result->result_arena_size = 0;
 }
 
 /* Deep-copy a parse-error list out of a scratch arena so the messages
@@ -189,7 +200,7 @@ size_t query_estimate_result_size(const char *sql) {
        empty window, plain scans break on the first record), so only the floor
        is needed. */
     if (has_limit && limit_val == 0 && !has_group && !has_agg) {
-        est = QUERY_PARSE_ARENA_MIN * 64;
+        est = QUERY_RESULT_ARENA_MIN;
         return est;
     }
     /* LIMIT without GROUP BY or aggregates stops reading once the window is
@@ -207,16 +218,28 @@ size_t query_estimate_result_size(const char *sql) {
             if (cap < est) est = cap;
         }
     }
-    if (est < QUERY_PARSE_ARENA_MIN * 64) est = QUERY_PARSE_ARENA_MIN * 64; /* floor 4MiB */
+    if (est < QUERY_RESULT_ARENA_MIN) est = QUERY_RESULT_ARENA_MIN; /* floor 4MiB */
     return est;
 }
 
-QueryResult query_execute(CSVConfig *config, const char *sql, Arena *arena) {
+QueryResult query_execute(CSVConfig *config, const char *sql, size_t arena_size) {
     QueryResult result = query_result_init();
 
+    /* Result arena: sized by the estimator unless the caller overrides. An
+       exact override (e.g. from CSVQL_QUERY_ARENA_SIZE) bypasses the
+       estimate so a mis-estimated query can be re-run at a fixed size. */
+    size_t need = arena_size > 0 ? arena_size : query_estimate_result_size(sql);
+    if (arena_create(&result.result_arena, need) != ARENA_OK) {
+        result.error = "Out of memory.";
+        result.out_of_memory = true;
+        result.result_arena_size = need;
+        return result;
+    }
+    result.result_arena_size = need;
+
     /* Parse into a private scratch arena so the AST and parse-error scratch
-       do not consume the caller's result arena. Scaled with the SQL length
-       so very large queries cannot fail to allocate their own AST. */
+       do not consume the result arena. Scaled with the SQL length so very
+       large queries cannot fail to allocate their own AST. */
     size_t sql_len = sql ? strlen(sql) : 0;
     size_t parse_size = QUERY_PARSE_ARENA_MIN;
     if (sql_len * 4 > parse_size) parse_size = sql_len * 4;
@@ -224,26 +247,31 @@ QueryResult query_execute(CSVConfig *config, const char *sql, Arena *arena) {
     Arena parse_arena;
     if (arena_create(&parse_arena, parse_size) != ARENA_OK) {
         result.error = "Out of memory.";
+        result.out_of_memory = true;
+        arena_destroy(&result.result_arena);
         return result;
     }
 
     ParseErrorList *parse_errors = parse_error_list_init(&parse_arena);
     if (parse_errors == NULL) {
         result.error = "Out of memory.";
+        result.out_of_memory = true;
         arena_destroy(&parse_arena);
+        arena_destroy(&result.result_arena);
         return result;
     }
 
     SelectStmt *stmt = parse_select(sql, &parse_arena, parse_errors);
     if (stmt == NULL || parse_errors->count > 0) {
         if (parse_errors->count > 0) {
-            result.parse_errors = copy_parse_errors(parse_errors, arena);
+            result.parse_errors = copy_parse_errors(parse_errors, &result.result_arena);
             if (result.parse_errors != NULL) {
                 result.error = result.parse_errors->errors[0];
                 result.error_line = result.parse_errors->error_lines[0];
                 result.error_column = result.parse_errors->error_columns[0];
             } else {
                 result.error = "Out of memory.";
+                result.out_of_memory = true;
             }
         }
         arena_destroy(&parse_arena);
@@ -258,12 +286,21 @@ QueryResult query_execute(CSVConfig *config, const char *sql, Arena *arena) {
     Arena tmp_arena;
     if (arena_create(&tmp_arena, QUERY_TMP_ARENA_SIZE) != ARENA_OK) {
         result.error = "Out of memory.";
+        result.out_of_memory = true;
         arena_destroy(&parse_arena);
+        arena_destroy(&result.result_arena);
         return result;
     }
 
-    QueryResult exec = execute_select(config, stmt, arena, &tmp_arena);
+    QueryResult exec = execute_select(config, stmt, &result.result_arena, &tmp_arena);
     arena_destroy(&tmp_arena);
     arena_destroy(&parse_arena);
+
+    /* Surface arena exhaustion with the size the user needs to see, so a
+       retry can size the arena explicitly (or via the env override). */
+    if (exec.error != NULL && strcmp(exec.error, "Out of memory.") == 0) {
+        exec.out_of_memory = true;
+        exec.result_arena_size = need;
+    }
     return exec;
 }
