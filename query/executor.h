@@ -8,7 +8,7 @@
 
 /* Largest ORDER BY + LIMIT window handled by the bounded top-k heap. Beyond
    this the executor falls back to materializing and sorting every row, and
-   query_estimate_result_size must not cap the arena for it. */
+   the result-size estimator must not cap the arena for it. */
 #define QUERY_TOPK_MAX_K (1 << 16)
 
 /* ===== Shared executor helpers ===== */
