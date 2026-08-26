@@ -488,33 +488,9 @@ static void maybe_add_history(const char *stmt) {
     free(copy);
 }
 
-/* ===== Tab completion ===== */
-static void completion_callback(const char *buf, linenoiseCompletions *lc) {
-    static const char *words[] = {
-        "SELECT", "FROM", "WHERE", "GROUP", "BY", "HAVING", "ORDER", "LIMIT",
-        "OFFSET", "DISTINCT", "AND", "OR", "NOT", "IN", "BETWEEN", "LIKE",
-        "ILIKE", "AS", "NULL", "TRUE", "FALSE", "CASE", "WHEN", "THEN", "ELSE",
-        "END", "ASC", "DESC", "UNION", "EXCEPT", "INTERSECT",
-        "COUNT", "SUM", "AVG", "MIN", "MAX",
-        "UPPER", "UCASE", "LOWER", "LCASE", "LENGTH", "TRIM", "SUBSTR",
-        "SUBSTRING", "CONCAT", "COALESCE", "IFNULL", "ABS", "ROUND",
-        NULL
-    };
-    size_t len = strlen(buf);
-    while (len > 0 && (isalnum((unsigned char)buf[len - 1]) || buf[len - 1] == '_'))
-        len--;
-    const char *tok = buf + len;
-    size_t tlen = strlen(tok);
-    for (int i = 0; words[i]; i++) {
-        if (tlen == 0 || str_nieq(words[i], tok, tlen))
-            linenoiseAddCompletion(lc, words[i]);
-    }
-}
-
 /* ===== REPL ===== */
 static void repl_loop(CSVConfig *config, size_t arena_override) {
     linenoiseHistorySetMaxLen(1000);
-    linenoiseSetCompletionCallback(completion_callback);
 
     const char *hist = history_path();
     if (hist) linenoiseHistoryLoad(hist);
