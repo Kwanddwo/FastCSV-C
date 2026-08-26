@@ -100,7 +100,6 @@ make csvql          # builds query/build/csvql
 Features:
 
 - **Line editing** with arrow keys, Ctrl-A/Ctrl-E, Ctrl-W, history via up/down arrows
-- **Tab completion** for keywords and function names
 - **Multi-line statements** with a `...>` continuation prompt; execute with `;` or a blank line
 - **Multiple statements per line** separated by top-level `;`
 - **Persistent history** saved to `~/.csvql_history` (override with `$CSVQL_HISTORY`)
@@ -151,6 +150,13 @@ The value is a plain byte count or a number with a `K`/`M`/`G` suffix. `$CSVQL_C
   UNKNOWN, `NOT UNKNOWN` stays UNKNOWN, `IN`/`NOT IN` with a NULL in the list
   yield UNKNOWN when nothing matches, and `IS NULL` / `IS NOT NULL` never
   yield UNKNOWN.
+- **Pass-through columns are verbatim**: a bare column reference (including
+  every column of `SELECT *`) projects the raw cell text, so values like `05`
+  or `3.50` round-trip unchanged and an empty cell prints as an empty field,
+  not the literal text `NULL`. Value typing (numeric parsing of numeric-looking
+  cells) only kicks in when a computation actually needs a value (arithmetic,
+  comparisons, aggregates); those computed results may be reformatted
+  numerically (`'05' + 1` yields `6`).
 - **Functions**: scalar `UPPER/UCASE`, `LOWER/LCASE`, `LENGTH`/`CHAR_LENGTH`/
   `CHARACTER_LENGTH`, `TRIM`, `SUBSTR`/`SUBSTRING`, `CONCAT`, `COALESCE`/
   `IFNULL`, `POSITION(sub IN str)`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`,

@@ -316,6 +316,14 @@ static void test_function_calls(void) {
     test_query_value("SELECT SUM(DISTINCT val) FROM 'query/data/distinct.csv'", "28.5");
     test_query_value("SELECT AVG(DISTINCT val) FROM 'query/data/distinct.csv'", "5.7");
     test_query("SELECT grp, COUNT(DISTINCT val) FROM 'query/data/distinct.csv' GROUP BY grp", 3);
+    /* Aggregate DISTINCT compares typed values, but row-level DISTINCT dedupes
+       the projected cell text: raw '05' and '5' stay distinct rows. */
+    test_query("SELECT DISTINCT val FROM 'query/data/distinct.csv'", 8);
+    /* Pass-through projection keeps cell text verbatim ('05' is not
+       reformatted to '5') and empty cells project as empty strings. */
+    test_query_value("SELECT val FROM 'query/data/distinct.csv' WHERE id = 7", "05");
+    test_query_value("SELECT * FROM 'query/data/distinct.csv' WHERE id = 7", "7");
+    test_query_value("SELECT note FROM 'query/data/nulls.csv' WHERE id = 1", "");
     test_query("SELECT MAX(age) FROM 'query/data/students.csv' LIMIT 1", 1);
     test_query_error("SELECT name, MAX(age) FROM 'query/data/students.csv'", "GROUP BY");
     test_query_error("SELECT MAX(age) FROM 'query/data/students.csv' WHERE SUM(age) > 5", "not supported");
@@ -616,11 +624,11 @@ static void test_order_by_references(void) {
 static void test_nulls_first_last(void) {
     printf("--- NULLS FIRST / LAST\n");
     test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS LAST LIMIT 1", "Alice");
-    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS FIRST LIMIT 1", "NULL");
-    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC NULLS FIRST LIMIT 1", "NULL");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS FIRST LIMIT 1", "");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC NULLS FIRST LIMIT 1", "");
     test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC NULLS LAST LIMIT 1", "Bob");
     test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name DESC LIMIT 1", "Bob");   /* default: NULLs last on DESC */
-    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name LIMIT 1", "NULL");      /* default: NULLs first on ASC */
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY name LIMIT 1", "");      /* default: NULLs first on ASC */
     test_query_error("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS", "FIRST");
     test_query("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS LAST", 3);
     test_query("SELECT name FROM 'query/data/nulls.csv' ORDER BY name NULLS FIRST", 3);
@@ -635,7 +643,7 @@ static void test_nulls_first_last(void) {
     test_query_value("SELECT id FROM 'query/data/nulls.csv' ORDER BY id LIMIT 1", "1");
     /* NULLS combined with an ordinal reference */
     test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY 1 NULLS LAST LIMIT 1", "Alice");
-    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY 1 NULLS FIRST LIMIT 1", "NULL");
+    test_query_value("SELECT name FROM 'query/data/nulls.csv' ORDER BY 1 NULLS FIRST LIMIT 1", "");
 }
 
 /* =================================================================

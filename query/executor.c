@@ -60,7 +60,25 @@ const char* project_row(const OutputCol *out_cols, int out_count,
     proj->field_count = (size_t)out_count;
 
     for (int i = 0; i < out_count; i++) {
-        EvalResult er = eval_expr(out_cols[i].expr, ctx);
+        /* A bare column reference projects its raw cell text verbatim. The
+           field value and the display value are distinct: cells like '05',
+           '3.50' or '1e3' must round-trip unchanged, and an empty cell is an
+           empty field, not the literal text 'NULL'. Typing happens only when
+           a computation actually needs a value (arithmetic, comparisons,
+           aggregates), which routes through eval_expr below. */
+        ExprNode *expr = out_cols[i].expr;
+        if (expr->type == EXPR_COLUMN_REF && expr->col_index >= 0) {
+            const char *raw = "";
+            if ((size_t)expr->col_index < ctx->record->field_count &&
+                ctx->record->fields[expr->col_index] != NULL)
+                raw = ctx->record->fields[expr->col_index];
+            char *s = arena_strdup(ctx->arena, raw);
+            if (s == NULL) return "Out of memory.";
+            proj->fields[i] = s;
+            continue;
+        }
+
+        EvalResult er = eval_expr(expr, ctx);
         if (eval_result_is_error(&er)) return er.error;
         char *s = (char*)eval_result_dup_to_arena(&er, ctx->arena);
         if (s == NULL) return "Out of memory.";
