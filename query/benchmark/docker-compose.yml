@@ -8,7 +8,6 @@ services:
       ROWS: ${ROWS:-1000000}
       RUNS: ${RUNS:-3}
       OUT: /results/csvql.json
-      CSVQL_QUERY_ARENA_SIZE: ${CSVQL_QUERY_ARENA_SIZE:-512M}
     volumes:
       - ./data:/data:ro
       - ./results:/results

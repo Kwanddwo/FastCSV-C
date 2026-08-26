@@ -2,7 +2,7 @@
 #define QUERY_RECORD_H
 
 #include "../csv_reader.h"
-#include "../arena.h"
+#include "qarena.h"
 #include <stdint.h>
 
 /* Hash a record's contents (used by the DISTINCT dedupe machinery). */
@@ -12,6 +12,6 @@ uint64_t hash_record(const CSVRecord *r);
 bool records_equal(const CSVRecord *a, const CSVRecord *b);
 
 /* Deep-copy a record into the arena (fields become arena-owned strings). */
-CSVRecord copy_record(CSVRecord *src, Arena *arena);
+CSVRecord copy_record(CSVRecord *src, QArena *arena);
 
 #endif

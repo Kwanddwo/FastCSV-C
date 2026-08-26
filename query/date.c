@@ -75,7 +75,7 @@ bool is_valid_extract_field(const char *f) {
            str_ieq(f, "QUARTER");
 }
 
-EvalResult eval_datetime_value(int kind, Arena *arena) {
+EvalResult eval_datetime_value(int kind, QArena *arena) {
     time_t t = time(NULL);
     struct tm *lt = localtime(&t);
     char buf[32];
@@ -92,7 +92,7 @@ EvalResult eval_datetime_value(int kind, Arena *arena) {
             strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", lt);
             break;
     }
-    const char *dup = arena_strdup(arena, buf);
+    const char *dup = qarena_strdup(arena, buf);
     return eval_result_str(dup ? dup : "");
 }
 

@@ -1,7 +1,7 @@
 #ifndef QUERY_PARSER_INTERNAL_H
 #define QUERY_PARSER_INTERNAL_H
 
-#include "../arena.h"
+#include "qarena.h"
 #include "ast.h"
 #include "parser.h"
 #include "scanner.h"
@@ -16,7 +16,7 @@ typedef struct {
     Token current;
     Token previous;
     ParseErrorList *errors;
-    Arena *arena;
+    QArena *arena;
     const char *source;
     /* Non-NULL fallback node returned when arena allocation fails. Sharing a
        single node is safe because parse errors abort execution before any
@@ -25,7 +25,7 @@ typedef struct {
 } Parser;
 
 /* ===== Init ===== */
-Parser parser_init(const char *source, Arena *arena, ParseErrorList *errors);
+Parser parser_init(const char *source, QArena *arena, ParseErrorList *errors);
 
 /* ===== Token helpers (parser.c) ===== */
 void advance(Parser *parser);
@@ -36,10 +36,10 @@ void error_at_current(Parser *parser, const char *message);
 void record_error(Parser *parser, const char *msg, int line, int col);
 void sync_after_error(Parser *parser);
 
-/* ===== Arena string helpers (parser.c) ===== */
+/* ===== QArena string helpers (parser.c) ===== */
 char* copy_lexeme(Parser *parser, const char *lexeme, int length);
 char* copy_string_literal(Parser *parser, const char *start, int length);
-char* arena_concat(Parser *parser, const char *a, const char *b);
+char* qarena_concat(Parser *parser, const char *a, const char *b);
 
 /* ===== AST node allocators (parser.c) ===== */
 ExprNode* alloc_expr_node(Parser *parser);

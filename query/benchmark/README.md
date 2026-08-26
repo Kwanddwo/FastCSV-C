@@ -35,7 +35,6 @@ benchmark/
 cd benchmark
 ./run.sh                          # default: 1,000,000 rows, 3 runs
 ROWS=100000 RUNS=5 ./run.sh       # override dataset size / iterations
-CSVQL_QUERY_ARENA_SIZE=1G ./run.sh # bypass csvql's result-size estimator (see below)
 ```
 
 The script:
@@ -97,16 +96,12 @@ load-once engine becomes cheaper.
 
 ## csvql arena sizing
 
-csvql sizes its query result arena automatically per statement via a heuristic
-estimator (source file size + query shape, 4 MiB floor), so it never needs a
-size chosen up front. The compose service's `512M` default for
-`CSVQL_QUERY_ARENA_SIZE` **bypasses the estimator** with a fixed size — the
-1M-row dataset fits comfortably, and `ORDER BY` materializes every projected
-row before applying `LIMIT` (~150 bytes/row). Accepted formats: a plain byte
-count or a `K`/`M`/`G` suffix (`1048576`, `64M`, `1G`); unset or invalid
-values fall back to the estimator. `CSVQL_CONFIG_ARENA_SIZE` (default `2K`)
-sizes the small parser-config arena. If even the fixed size is too small,
-csvql exits with `Error: Out of memory.` (reporting the arena's byte count).
+csvql's arenas (parse, per-row scratch, result set) are growable: each starts
+small and chains additional chunks on demand, so memory stays proportional to
+what a query actually holds. A `SELECT COUNT(*)` over the 1M-row dataset
+barely allocates, while `ORDER BY` materializes every projected row before
+applying `LIMIT` and grows as it goes (~150 bytes/row). No sizing, no tuning,
+no environment variables.
 
 ## Caveats
 

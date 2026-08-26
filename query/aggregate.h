@@ -1,7 +1,7 @@
 #ifndef QUERY_AGGREGATE_H
 #define QUERY_AGGREGATE_H
 
-#include "../arena.h"
+#include "qarena.h"
 #include "ast.h"
 #include "eval.h"
 #include "executor.h"
@@ -59,12 +59,12 @@ typedef struct {
 } AggGroup;
 
 /* ===== Grouping ===== */
-const char* group_table_init(Arena *arena, GroupTable *t, int cap);
-const char* group_table_insert(Arena *arena, GroupTable *t, AggGroup **groups,
+const char* group_table_init(QArena *arena, GroupTable *t, int cap);
+const char* group_table_insert(QArena *arena, GroupTable *t, AggGroup **groups,
                                int gi, int group_count, int k);
 int group_table_find(const GroupTable *t, AggGroup **groups,
                      const EvalResult *keys, int k);
-AggGroup* agg_group_create(int k, int spec_count, Arena *arena);
+AggGroup* agg_group_create(int k, int spec_count, QArena *arena);
 
 /* ===== Aggregate accumulation ===== */
 const char* aggregate_row(ExprNode *arg, const char *name, bool distinct,
@@ -77,8 +77,8 @@ int find_spec(const AggSpec *specs, int spec_count, ExprNode *node);
 /* Build one output row per group, filtered by HAVING, with ORDER BY keys. */
 const char* finalize_groups(QueryResult *result, AggGroup **groups, int group_count,
                             AggSpec *specs, int spec_count, OutputCol *out_cols,
-                            int out_count, int k, SelectStmt *stmt, Arena *arena,
-                            Arena *tmp,
+                            int out_count, int k, SelectStmt *stmt, QArena *arena,
+                            QArena *tmp,
                             char **headers, int header_count,
                             EvalResult **sort_keys, int *sort_keys_cap,
                             int *capacity);

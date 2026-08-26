@@ -23,7 +23,7 @@ static int pass, fail;
 static QueryResult run_query(const char *sql, Arena *cfg_arena) {
     CSVConfig *cfg = csv_config_create(cfg_arena);
     csv_config_set_has_header(cfg, 1);
-    return query_execute(cfg, sql, 0);
+    return query_execute(cfg, sql);
 }
 
 typedef enum {
@@ -39,7 +39,7 @@ typedef enum {
 static int test_sql(const char *sql, CheckKind kind, int expect, const char *expect_sub) {
     Arena cfg_arena;
     ArenaResult ar = arena_create(&cfg_arena, 2 * 1024); /* config only; the
-        query engine sizes its own result arena via the estimator */
+        query engine owns its own growable arenas */
     if (ar != ARENA_OK) {
         printf("FAIL [arena]: %s\n", sql);
         fail++;
@@ -848,6 +848,19 @@ static void test_comments(void) {
     test_query_parse_error_count("SELECT * /* note FROM 'query/data/students.csv'", 1);
 }
 
+/* Regression: a long but valid expression (SELECT 1+1+...+1 with 400 terms)
+   used to overflow the fixed-size parse arena and crash with SIGSEGV inside
+   strtod. Growable arenas must handle it cleanly. */
+static void test_large_expression(void) {
+    printf("--- large expression (arena growth)\n");
+
+    char sql[1024];
+    strcpy(sql, "SELECT 1");
+    for (int i = 0; i < 400; i++) strcat(sql, "+1");
+    strcat(sql, " FROM 'query/data/students.csv' LIMIT 1");
+    test_query_value(sql, "401");
+}
+
 /* =================================================================
  * main
  * ================================================================= */
@@ -893,6 +906,7 @@ int main(void) {
     test_other_statements();
     test_error_recovery();
     test_comments();
+    test_large_expression();
 
     printf("\n=== Results ===\n");
     printf("PASS: %d   FAIL: %d   TOTAL: %d\n", pass, fail, pass + fail);

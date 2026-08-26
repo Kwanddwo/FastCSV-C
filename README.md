@@ -107,13 +107,11 @@ Features:
 
 ### Result-set memory
 
-csvql sizes its result-set arena automatically per statement: a heuristic estimator (source file size + query shape, with a 4 MiB floor) predicts how much memory a query can reach, so you never have to choose a size. If a query outgrows the estimate it fails cleanly with `Error: Out of memory.` — the message reports how many bytes the arena had, and you can re-run the same query with `$CSVQL_QUERY_ARENA_SIZE`, which **bypasses the estimator** and uses exactly that size:
-
-```bash
-CSVQL_QUERY_ARENA_SIZE=256M ./query/build/csvql "SELECT * FROM 'huge.csv';"
-```
-
-The value is a plain byte count or a number with a `K`/`M`/`G` suffix. `$CSVQL_CONFIG_ARENA_SIZE` (default 2 KiB) sizes the small parser-config arena; you generally don't need to touch it.
+csvql's arenas (parse, per-row scratch, result set) are growable: each starts
+small and chains additional chunks on demand, so memory stays proportional to
+what a query actually holds — a `SELECT COUNT(*)` on a huge file barely
+allocates, and a large result set grows without a precomputed cap. No sizing,
+no tuning, no environment variables.
 
 ### Meta-commands
 

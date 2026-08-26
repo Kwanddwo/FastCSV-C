@@ -3,6 +3,7 @@
  * DISTINCT / ORDER BY / LIMIT paths. The heavy lifting lives in eval.c,
  * aggregate.c, sort.c, dedupe.c and validate.c. */
 #include "executor.h"
+#include "../arena.h"
 #include "eval.h"
 #include "aggregate.h"
 #include "sort.h"
@@ -21,12 +22,12 @@ static const int GROUP_INITIAL_CAPACITY = 16;  /* aggregation groups */
 /* ===== Growable array helpers ===== */
 
 /* Grow a dynamically sized array so it holds at least `needed` elements. */
-const char* grow_array(Arena *arena, void **arr, int *cap, int needed,
+const char* grow_array(QArena *arena, void **arr, int *cap, int needed,
                               size_t elem_size) {
     if (needed <= *cap) return NULL;
     int new_cap = *cap ? *cap * 2 : GROW_INITIAL_CAPACITY;
     while (new_cap < needed) new_cap *= 2;
-    void *mem = arena_realloc(arena, *arr, elem_size * (size_t)*cap,
+    void *mem = qarena_realloc(arena, *arr, elem_size * (size_t)*cap,
                               elem_size * (size_t)new_cap);
     if (mem == NULL) return "Out of memory.";
     *arr = mem;
@@ -35,10 +36,10 @@ const char* grow_array(Arena *arena, void **arr, int *cap, int needed,
 }
 
 /* Allocate from the arena, setting *error on failure. */
-void* alloc_or_error(Arena *arena, size_t size, const char **error) {
+void* alloc_or_error(QArena *arena, size_t size, const char **error) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, size, &mem);
-    if (ar != ARENA_OK) {
+    QArenaResult ar = qarena_alloc(arena, size, &mem);
+    if (ar != QARENA_OK) {
         *error = "Out of memory.";
         return NULL;
     }
@@ -50,12 +51,12 @@ void* alloc_or_error(Arena *arena, size_t size, const char **error) {
 const char* project_row(const OutputCol *out_cols, int out_count,
                                EvalCtx *ctx, CSVRecord **out) {
     void *mem;
-    ArenaResult ar = arena_alloc(ctx->arena, sizeof(CSVRecord), &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(ctx->arena, sizeof(CSVRecord), &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     CSVRecord *proj = (CSVRecord*)mem;
 
-    ar = arena_alloc(ctx->arena, sizeof(char*) * (size_t)out_count, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(ctx->arena, sizeof(char*) * (size_t)out_count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     proj->fields = (char**)mem;
     proj->field_count = (size_t)out_count;
 
@@ -72,7 +73,7 @@ const char* project_row(const OutputCol *out_cols, int out_count,
             if ((size_t)expr->col_index < ctx->record->field_count &&
                 ctx->record->fields[expr->col_index] != NULL)
                 raw = ctx->record->fields[expr->col_index];
-            char *s = arena_strdup(ctx->arena, raw);
+            char *s = qarena_strdup(ctx->arena, raw);
             if (s == NULL) return "Out of memory.";
             proj->fields[i] = s;
             continue;
@@ -90,7 +91,7 @@ const char* project_row(const OutputCol *out_cols, int out_count,
 
 /* Append a projected record to the result, growing as needed. */
 const char* append_result(CSVRecord ***records, int *record_count, int *capacity,
-                                 CSVRecord *proj, Arena *arena) {
+                                 CSVRecord *proj, QArena *arena) {
     const char *err = grow_array(arena, (void**)records, capacity, *record_count + 1,
                                  sizeof(CSVRecord*));
     if (err) return err;
@@ -113,14 +114,17 @@ static bool has_csv_extension(const char *name) {
            (name[len - 1] == 'v' || name[len - 1] == 'V');
 }
 
-static const char* open_reader(CSVConfig *config, SelectStmt *stmt, Arena *arena,
+static const char* open_reader(CSVConfig *config, SelectStmt *stmt, QArena *arena,
+                               Arena *config_arena,
                                CSVReader **out_reader, char ***out_headers,
                                int *out_header_count) {
     if (stmt->table_name == NULL || stmt->table_name[0] == '\0') {
         return "No table specified in FROM clause.";
     }
 
-    CSVConfig *cfg_copy = csv_config_copy(arena, config);
+    /* The reader keeps this config (and its path string) for the whole scan,
+       so it must live in the library's own arena, not the query arena. */
+    CSVConfig *cfg_copy = csv_config_copy(config_arena, config);
     if (cfg_copy == NULL) return "Out of memory.";
 
     /* Exact path first; on a miss, retry with ".csv" appended when the name
@@ -132,8 +136,8 @@ static const char* open_reader(CSVConfig *config, SelectStmt *stmt, Arena *arena
     if (reader == NULL && !has_csv_extension(stmt->table_name)) {
         size_t len = strlen(stmt->table_name);
         void *mem;
-        ArenaResult ar = arena_alloc(arena, len + 5, &mem);
-        if (ar != ARENA_OK) return "Out of memory.";
+        QArenaResult ar = qarena_alloc(arena, len + 5, &mem);
+        if (ar != QARENA_OK) return "Out of memory.";
         char *candidate = (char*)mem;
         memcpy(candidate, stmt->table_name, len);
         memcpy(candidate + len, ".csv", 5);
@@ -149,7 +153,7 @@ static const char* open_reader(CSVConfig *config, SelectStmt *stmt, Arena *arena
             snprintf(buf, sizeof(buf), "Failed to open '%s' (also tried '%s.csv').",
                      stmt->table_name, stmt->table_name);
         }
-        char *msg = arena_strdup(arena, buf);
+        char *msg = qarena_strdup(arena, buf);
         return msg ? msg : "Failed to open file.";
     }
 
@@ -170,7 +174,7 @@ static const char* open_reader(CSVConfig *config, SelectStmt *stmt, Arena *arena
 
 /* Build the output column descriptors, expanding '*' to one per header. */
 static const char* build_output_cols(SelectStmt *stmt, char **headers, int header_count,
-                                     Arena *arena, OutputCol **out_cols, int *out_count) {
+                                     QArena *arena, OutputCol **out_cols, int *out_count) {
     int count = 0;
     for (int i = 0; i < stmt->item_count; i++) {
         if (stmt->items[i].expr->type == EXPR_STAR) {
@@ -181,8 +185,8 @@ static const char* build_output_cols(SelectStmt *stmt, char **headers, int heade
     }
 
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(OutputCol) * (size_t)count, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(OutputCol) * (size_t)count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     OutputCol *cols = (OutputCol*)mem;
     int idx = 0;
 
@@ -209,15 +213,15 @@ static const char* build_output_cols(SelectStmt *stmt, char **headers, int heade
 }
 
 static const char* set_result_headers(QueryResult *result, OutputCol *out_cols,
-                                      int out_count, Arena *arena) {
+                                      int out_count, QArena *arena) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(char*) * (size_t)out_count, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(char*) * (size_t)out_count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     result->headers = (char**)mem;
     result->header_count = out_count;
 
     for (int i = 0; i < out_count; i++) {
-        result->headers[i] = arena_strdup(arena, out_cols[i].name);
+        result->headers[i] = qarena_strdup(arena, out_cols[i].name);
     }
     return NULL;
 }
@@ -226,14 +230,16 @@ static const char* set_result_headers(QueryResult *result, OutputCol *out_cols,
 
 /* ===== Main executor ===== */
 
-QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, Arena *arena, Arena *tmp) {
+QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
+                           QArena *tmp, Arena *config_arena) {
     QueryResult result = query_result_init();
 
     /* 0. Validate FROM and open file */
     CSVReader *reader = NULL;
     char **headers = NULL;
     int header_count = 0;
-    const char *err = open_reader(config, stmt, arena, &reader, &headers, &header_count);
+    const char *err = open_reader(config, stmt, arena, config_arena, &reader, &headers,
+                                  &header_count);
     if (err) { result.error = err; goto cleanup; }
 
     /* 1. Get CSV headers / 2. Validate column references */
@@ -380,7 +386,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, Arena *arena, Ar
 
     CSVRecord *record;
     while ((record = csv_reader_next_record(reader)) != NULL) {
-        arena_reset(tmp);
+        qarena_reset(tmp);
 
         /* Evaluate WHERE */
         if (stmt->where) {
@@ -398,9 +404,9 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, Arena *arena, Ar
             EvalResult *keys = NULL;
             if (group_by_k > 0) {
                 void *keys_mem;
-                ArenaResult ar = arena_alloc(tmp, sizeof(EvalResult) * (size_t)group_by_k,
+                QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * (size_t)group_by_k,
                                              &keys_mem);
-                if (ar != ARENA_OK) { result.error = "Out of memory."; goto cleanup; }
+                if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
                 keys = (EvalResult*)keys_mem;
                 for (int j = 0; j < group_by_k; j++) {
                     EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
@@ -429,7 +435,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, Arena *arena, Ar
                     for (int j = 0; j < group_by_k; j++) {
                         g->keys[j] = keys[j];
                         if (!keys[j].is_numeric && keys[j].str_val)
-                            g->keys[j].str_val = arena_strdup(arena, keys[j].str_val);
+                            g->keys[j].str_val = qarena_strdup(arena, keys[j].str_val);
                     }
                 }
                 groups[group_count] = g;
@@ -456,9 +462,9 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, Arena *arena, Ar
         if (topk_path) {
             EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
             EvalResult *keys;
-            ArenaResult ar = arena_alloc(tmp, sizeof(EvalResult) * (size_t)k,
+            QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * (size_t)k,
                                          (void**)&keys);
-            if (ar != ARENA_OK) { result.error = "Out of memory."; goto cleanup; }
+            if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
             for (int j = 0; j < k; j++) {
                 EvalResult er = eval_expr(stmt->order_by[j].expr, &ctx);
                 if (eval_result_is_error(&er)) {

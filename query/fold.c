@@ -8,10 +8,10 @@
 #include "validate.h"
 
 /* Build a literal AST node from an evaluated value. */
-static ExprNode* alloc_literal_node(Arena *arena, const EvalResult *v) {
+static ExprNode* alloc_literal_node(QArena *arena, const EvalResult *v) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(ExprNode), &mem);
-    if (ar != ARENA_OK) return NULL;
+    QArenaResult ar = qarena_alloc(arena, sizeof(ExprNode), &mem);
+    if (ar != QARENA_OK) return NULL;
     ExprNode *node = (ExprNode*)mem;
     node->col_index = -1;
     node->num_value = 0.0;
@@ -33,13 +33,13 @@ static ExprNode* alloc_literal_node(Arena *arena, const EvalResult *v) {
         node->num_value = v->num_val;
     } else {
         node->type = EXPR_LITERAL_STRING;
-        node->str_value = arena_strdup(arena, v->str_val ? v->str_val : "");
+        node->str_value = qarena_strdup(arena, v->str_val ? v->str_val : "");
     }
     return node;
 }
 
 /* Fold one subtree in place, returning the (possibly new) node. */
-static ExprNode* fold_node(ExprNode *node, Arena *arena) {
+static ExprNode* fold_node(ExprNode *node, QArena *arena) {
     if (node == NULL) return NULL;
 
     /* Post-order: fold children first so operators see folded operands. */
@@ -74,7 +74,7 @@ static ExprNode* fold_node(ExprNode *node, Arena *arena) {
     return lit ? lit : node;
 }
 
-void fold_constants(SelectStmt *stmt, Arena *arena) {
+void fold_constants(SelectStmt *stmt, QArena *arena) {
     if (stmt == NULL) return;
     for (int i = 0; i < stmt->item_count; i++) {
         stmt->items[i].expr = fold_node(stmt->items[i].expr, arena);

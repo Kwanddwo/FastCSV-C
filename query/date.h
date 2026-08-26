@@ -33,7 +33,7 @@ enum {
 
 /* CURRENT_DATE / CURRENT_TIME / CURRENT_TIMESTAMP / LOCALTIME /
    LOCALTIMESTAMP as of now (local time). */
-EvalResult eval_datetime_value(int kind, Arena *arena);
+EvalResult eval_datetime_value(int kind, QArena *arena);
 
 /* EXTRACT(field FROM value) and the YEAR()/MONTH()/DAY() convenience forms.
    A non-parseable value yields NULL. */

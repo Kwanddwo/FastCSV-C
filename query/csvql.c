@@ -15,42 +15,6 @@
 #define CFG_ARENA_SIZE (2 * 1024)
 #define CSVQL_VERSION "1.0"
 
-/* ===== Arena size resolution =====
- * The query engine sizes its own result arena per statement via a heuristic
- * estimate (file size + query shape). CSVQL_QUERY_ARENA_SIZE bypasses the
- * estimator with a fixed size when a query outgrows its estimate; it accepts
- * a plain byte count ("1048576") or a number with a K/M/G suffix ("256K",
- * "64M", "1G", case-insensitive). A missing/invalid value falls back to the
- * estimator (0). CSVQL_CONFIG_ARENA_SIZE sizes the tiny config arena.
- */
-static size_t arena_size_from_env(const char *name, size_t default_size) {
-    const char *raw = getenv(name);
-    if (!raw || !*raw) return default_size;
-
-    errno = 0;
-    char *end = NULL;
-    unsigned long long val = strtoull(raw, &end, 10);
-    if (errno != 0 || end == raw) return default_size;
-
-    while (*end && isspace((unsigned char)*end)) end++;
-    if (*end) {
-        unsigned long long mult = 0;
-        switch (toupper((unsigned char)*end)) {
-            case 'K': mult = 1024ULL; break;
-            case 'M': mult = 1024ULL * 1024ULL; break;
-            case 'G': mult = 1024ULL * 1024ULL * 1024ULL; break;
-            default: return default_size; /* trailing junk after suffix */
-        }
-        end++;
-        while (*end && isspace((unsigned char)*end)) end++;
-        if (*end) return default_size; /* extra characters after suffix */
-        val *= mult;
-    }
-
-    if (val == 0 || val > (size_t)-1 / 2) return default_size;
-    return (size_t)val;
-}
-
 /* ===== Terminal colors ===== */
 #define C_RESET  "\x1b[0m"
 #define C_RED    "\x1b[31m"
@@ -148,11 +112,7 @@ static void print_result(QueryResult *result, const char *source) {
     }
 
     if (result->error) {
-        if (result->out_of_memory) {
-            fprintf(stderr, "%sError: Out of memory.%s (query arena: %zu bytes; "
-                    "set CSVQL_QUERY_ARENA_SIZE=<larger> to bypass the estimator)\n",
-                    red, rst, result->result_arena_size);
-        } else if (result->error_line > 0 || result->error_column >= 0) {
+        if (result->error_line > 0 || result->error_column >= 0) {
             fprintf(stderr, "%sError at [line %d, col %d]:%s %s\n",
                     red, result->error_line, result->error_column, rst, result->error);
             print_error_location(source, result->error_line, result->error_column);
@@ -322,10 +282,9 @@ static bool statement_complete(const char *buf) {
     return last_semicolon;
 }
 
-/* Execute one or more ';'-separated statements. arena_override bypasses the
-   query engine's result-size estimator (0 = use the estimate). Segments
-   made of only whitespace and comments are skipped. */
-static void exec_statement(CSVConfig *config, size_t arena_override, const char *stmt) {
+/* Execute one or more ';'-separated statements. Segments made of only
+   whitespace and comments are skipped. */
+static void exec_statement(CSVConfig *config, const char *stmt) {
     ScanState st = SCAN_NORMAL;
     const char *seg_start = stmt;
     bool seg_has_code = false;
@@ -349,7 +308,7 @@ static void exec_statement(CSVConfig *config, size_t arena_override, const char 
                     memcpy(seg, seg_start, seglen);
                     seg[seglen] = '\0';
 
-                    QueryResult res = query_execute(config, seg, arena_override);
+                    QueryResult res = query_execute(config, seg);
                     print_result(&res, seg);
                     printf("\n");
                     query_result_destroy(&res);
@@ -374,7 +333,7 @@ static void exec_statement(CSVConfig *config, size_t arena_override, const char 
             memcpy(seg, seg_start, seglen);
             seg[seglen] = '\0';
 
-            QueryResult res = query_execute(config, seg, arena_override);
+            QueryResult res = query_execute(config, seg);
             print_result(&res, seg);
             printf("\n");
             query_result_destroy(&res);
@@ -489,7 +448,7 @@ static void maybe_add_history(const char *stmt) {
 }
 
 /* ===== REPL ===== */
-static void repl_loop(CSVConfig *config, size_t arena_override) {
+static void repl_loop(CSVConfig *config) {
     linenoiseHistorySetMaxLen(1000);
 
     const char *hist = history_path();
@@ -520,7 +479,7 @@ static void repl_loop(CSVConfig *config, size_t arena_override) {
             }
             /* EOF (Ctrl-D) or end of piped input */
             printf("\n");
-            if (sb.len) exec_statement(config, arena_override, sb.data);
+            if (sb.len) exec_statement(config, sb.data);
             break;
         }
 
@@ -562,7 +521,7 @@ static void repl_loop(CSVConfig *config, size_t arena_override) {
         bool blank_line = (*t == '\0') || comment_only_line(t);
         if (statement_complete(sb.data) || (blank_line && sb.len > 1)) {
             maybe_add_history(sb.data);
-            exec_statement(config, arena_override, sb.data);
+            exec_statement(config, sb.data);
             sb_reset(&sb);
         }
 
@@ -590,14 +549,8 @@ static bool has_significant_code(const char *s) {
 int main(int argc, char **argv) {
     Arena cfg_arena;
 
-    size_t cfg_size = arena_size_from_env("CSVQL_CONFIG_ARENA_SIZE", CFG_ARENA_SIZE);
-    /* 0 lets the query engine size its own result arena via the estimator;
-       a nonzero value bypasses the estimator with a fixed size. */
-    size_t arena_override = arena_size_from_env("CSVQL_QUERY_ARENA_SIZE", 0);
-
-    if (arena_create(&cfg_arena, cfg_size) != ARENA_OK) {
-        fprintf(stderr, "Failed to create config arena "
-                        "(sized %zu bytes; see CSVQL_CONFIG_ARENA_SIZE).\n", cfg_size);
+    if (arena_create(&cfg_arena, CFG_ARENA_SIZE) != ARENA_OK) {
+        fprintf(stderr, "Failed to create config arena.\n");
         return 1;
     }
 
@@ -611,14 +564,14 @@ int main(int argc, char **argv) {
             arena_destroy(&cfg_arena);
             return 0;
         }
-        QueryResult result = query_execute(config, argv[1], arena_override);
+        QueryResult result = query_execute(config, argv[1]);
         print_result(&result, argv[1]);
         bool failed = result.error != NULL;
         query_result_destroy(&result);
         arena_destroy(&cfg_arena);
         return failed ? 1 : 0;
     } else if (argc == 1) {
-        repl_loop(config, arena_override);
+        repl_loop(config);
     } else {
         fprintf(stderr, "Usage:\n");
         fprintf(stderr, "  %s            Enter interactive REPL\n", argv[0]);

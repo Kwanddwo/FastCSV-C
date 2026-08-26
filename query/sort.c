@@ -61,21 +61,21 @@ static void sort_indices(int *order, int n,
    binary max-heap: heap[i] is an entry index, and the root (heap[0]) is the
    worst kept entry, i.e. the first candidate for eviction. Entries hold the
    projected output record plus its persisted ORDER BY keys. */
-const char* topk_init(Arena *arena, TopK *tk, int cap, int key_count,
+const char* topk_init(QArena *arena, TopK *tk, int cap, int key_count,
                              const OrderByItem *order_by) {
     tk->cap = cap;
     tk->count = 0;
     tk->key_count = key_count;
     tk->order_by = order_by;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(CSVRecord*) * (size_t)cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     tk->recs = (CSVRecord**)mem;
-    ar = arena_alloc(arena, sizeof(EvalResult) * (size_t)cap * (size_t)key_count, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(EvalResult) * (size_t)cap * (size_t)key_count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     tk->keys = (EvalResult*)mem;
-    ar = arena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     tk->heap = (int*)mem;
     return NULL;
 }
@@ -90,10 +90,10 @@ bool topk_would_keep(const TopK *tk, const EvalResult *keys) {
 
 /* Copy string key components into the arena so entries survive row-scoped
    temp arena resets. */
-static void persist_keys(Arena *arena, EvalResult *keys, int key_count) {
+static void persist_keys(QArena *arena, EvalResult *keys, int key_count) {
     for (int j = 0; j < key_count; j++) {
         if (!keys[j].is_numeric && keys[j].str_val)
-            keys[j].str_val = arena_strdup(arena, keys[j].str_val);
+            keys[j].str_val = qarena_strdup(arena, keys[j].str_val);
     }
 }
 
@@ -137,7 +137,7 @@ static void topk_sift_down(TopK *tk) {
 
 /* Store a kept entry: copy rec + keys into the next free slot (or over the
    evicted root), persisting string keys, and restore the heap invariant. */
-void topk_insert(Arena *arena, TopK *tk, CSVRecord *rec,
+void topk_insert(QArena *arena, TopK *tk, CSVRecord *rec,
                         const EvalResult *keys) {
     int idx;
     if (tk->count < tk->cap) {
@@ -159,14 +159,14 @@ void topk_insert(Arena *arena, TopK *tk, CSVRecord *rec,
 
 /* Emit the stored entries in ascending final ORDER BY order into a fresh
    arena-allocated array. */
-const char* topk_emit(Arena *arena, TopK *tk, CSVRecord ***out,
+const char* topk_emit(QArena *arena, TopK *tk, CSVRecord ***out,
                              int *out_count) {
     int n = tk->count;
     *out_count = n;
     if (n == 0) { *out = NULL; return NULL; }
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(CSVRecord*) * (size_t)n, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)n, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     CSVRecord **result = (CSVRecord**)mem;
     /* Each root-pop yields the worst of the remaining entries, so it belongs
        at the back of the ascending output. */
@@ -193,25 +193,25 @@ const char* eval_sort_keys(EvalCtx *ctx, const OrderByItem *order_by, int k,
         EvalResult er = eval_expr(order_by[j].expr, ctx);
         if (eval_result_is_error(&er)) return er.error;
         if (!er.is_numeric && er.str_val)
-            er.str_val = arena_strdup(ctx->arena, er.str_val);
+            er.str_val = qarena_strdup(ctx->arena, er.str_val);
         (*sort_keys)[idx * k + j] = er;
     }
     return NULL;
 }
 const char* order_records(CSVRecord ***records, int record_count, int k,
                                  const EvalResult *sort_keys, const OrderByItem *order_by,
-                                 Arena *arena) {
+                                 QArena *arena) {
     if (k <= 0 || record_count <= 1) return NULL;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)record_count, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)record_count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     int *order = (int*)mem;
     for (int i = 0; i < record_count; i++) order[i] = i;
 
     sort_indices(order, record_count, sort_keys, k, order_by);
 
-    ar = arena_alloc(arena, sizeof(CSVRecord*) * (size_t)record_count, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)record_count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     CSVRecord **gathered = (CSVRecord**)mem;
     for (int i = 0; i < record_count; i++)
         gathered[i] = (*records)[order[i]];

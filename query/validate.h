@@ -1,7 +1,7 @@
 #ifndef QUERY_VALIDATE_H
 #define QUERY_VALIDATE_H
 
-#include "../arena.h"
+#include "qarena.h"
 #include "ast.h"
 #include "aggregate.h"
 #include "eval.h"
@@ -31,22 +31,22 @@ int find_column_index(const char *name, char **headers, int header_count);
 /* Validate an expression's column refs, returning an arena-owned error string
    or NULL if valid. Resolves and caches each column index on the node. */
 const char* validate_columns(ExprNode *expr, char **headers, int header_count,
-                             Arena *arena, const char **bad_col);
+                             QArena *arena, const char **bad_col);
 
 /* ===== Statement validation ===== */
 const char* validate_stmt(SelectStmt *stmt, char **headers, int header_count,
-                          Arena *arena, const char **bad_col);
+                          QArena *arena, const char **bad_col);
 const char* validate_grouping(SelectStmt *stmt, OutputCol *out_cols, int out_count,
                               char **grouped_cols, int grouped_col_count,
-                              bool grouped, bool group_mode, Arena *arena);
+                              bool grouped, bool group_mode, QArena *arena);
 
 /* ===== Aggregate/column collection ===== */
 void collect_specs(ExprNode *node, AggSpec **specs, int *spec_count,
-                   int *spec_cap, Arena *arena);
+                   int *spec_cap, QArena *arena);
 void collect_column_refs(ExprNode *node, char ***names, int *count, int *cap,
-                         Arena *arena);
+                         QArena *arena);
 
 /* ===== Generate column ref ExprNode for star expansion ===== */
-ExprNode* make_column_ref_node(Arena *arena, const char *name);
+ExprNode* make_column_ref_node(QArena *arena, const char *name);
 
 #endif

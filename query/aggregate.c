@@ -32,30 +32,30 @@ static uint64_t hash_distinct_value(const EvalResult *v) {
 }
 
 /* Lazily allocate the distinct value set on first use. */
-static const char* value_set_ensure(Arena *arena, ValueSet *s) {
+static const char* value_set_ensure(QArena *arena, ValueSet *s) {
     if (s->slots != NULL) return NULL;
     s->cap = SEEN_INITIAL_CAPACITY;
     s->count = 0;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)s->cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)s->cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     s->slots = (int*)mem;
     for (int i = 0; i < s->cap; i++) s->slots[i] = -1;
-    ar = arena_alloc(arena, sizeof(uint64_t) * (size_t)s->cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(uint64_t) * (size_t)s->cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     s->hashes = (uint64_t*)mem;
-    ar = arena_alloc(arena, sizeof(EvalResult) * (size_t)s->cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(EvalResult) * (size_t)s->cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     s->values = (EvalResult*)mem;
     return NULL;
 }
 
 /* Double the set capacity and rehash every stored value. */
-static const char* value_set_grow(Arena *arena, ValueSet *s) {
+static const char* value_set_grow(QArena *arena, ValueSet *s) {
     int new_cap = s->cap * 2;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     int *slots = (int*)mem;
     for (int i = 0; i < new_cap; i++) slots[i] = -1;
     for (int i = 0; i < s->count; i++) {
@@ -63,11 +63,11 @@ static const char* value_set_grow(Arena *arena, ValueSet *s) {
         while (slots[slot] != -1) slot = (slot + 1) & (uint64_t)(new_cap - 1);
         slots[slot] = i;
     }
-    uint64_t *new_hashes = (uint64_t*)arena_realloc(
+    uint64_t *new_hashes = (uint64_t*)qarena_realloc(
         arena, s->hashes, sizeof(uint64_t) * (size_t)s->cap,
         sizeof(uint64_t) * (size_t)new_cap);
     if (new_hashes == NULL) return "Out of memory.";
-    EvalResult *new_values = (EvalResult*)arena_realloc(
+    EvalResult *new_values = (EvalResult*)qarena_realloc(
         arena, s->values, sizeof(EvalResult) * (size_t)s->cap,
         sizeof(EvalResult) * (size_t)new_cap);
     if (new_values == NULL) return "Out of memory.";
@@ -81,7 +81,7 @@ static const char* value_set_grow(Arena *arena, ValueSet *s) {
 /* Register v as a distinct value in st's set. Sets *is_new = true when v was
    not present before (the caller counts it), false for a duplicate. Returns
    NULL on success, or an error string on allocation failure. */
-static const char* agg_seen_add(AggState *st, const EvalResult *v, Arena *arena,
+static const char* agg_seen_add(AggState *st, const EvalResult *v, QArena *arena,
                                 bool *is_new) {
     const char *err = value_set_ensure(arena, &st->dset);
     if (err) return err;
@@ -104,7 +104,7 @@ static const char* agg_seen_add(AggState *st, const EvalResult *v, Arena *arena,
     }
     EvalResult copy = *v;
     if (!copy.is_numeric && copy.str_val) {
-        const char *dup = arena_strdup(arena, copy.str_val);
+        const char *dup = qarena_strdup(arena, copy.str_val);
         if (dup == NULL) return "Out of memory.";
         copy.str_val = dup;
     }
@@ -117,14 +117,14 @@ static const char* agg_seen_add(AggState *st, const EvalResult *v, Arena *arena,
 }
 
 /* Install v as the MIN/MAX best value (string copies are arena-owned). */
-static void agg_best_set(AggState *st, const EvalResult *v, Arena *arena) {
+static void agg_best_set(AggState *st, const EvalResult *v, QArena *arena) {
     if (v->is_numeric) {
         st->best = *v;
     } else {
         st->best.is_null = false;
         st->best.is_numeric = false;
         st->best.num_val = 0.0;
-        st->best.str_val = arena_strdup(arena, v->str_val ? v->str_val : "");
+        st->best.str_val = qarena_strdup(arena, v->str_val ? v->str_val : "");
     }
 }
 
@@ -251,10 +251,10 @@ static uint64_t hash_group_keys(const EvalResult *keys, int k) {
 
 /* ===== Group hash table ===== */
 
-const char* group_table_init(Arena *arena, GroupTable *t, int cap) {
+const char* group_table_init(QArena *arena, GroupTable *t, int cap) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     t->slots = (int*)mem;
     t->cap = cap;
     t->count = 0;
@@ -263,12 +263,12 @@ const char* group_table_init(Arena *arena, GroupTable *t, int cap) {
 }
 
 /* Rehash every group into a table twice as large. */
-static const char* group_table_grow(Arena *arena, GroupTable *t, AggGroup **groups,
+static const char* group_table_grow(QArena *arena, GroupTable *t, AggGroup **groups,
                                     int group_count, int k) {
     int new_cap = t->cap * 2;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     int *slots = (int*)mem;
     for (int i = 0; i < new_cap; i++) slots[i] = -1;
     for (int gi = 0; gi < group_count; gi++) {
@@ -295,7 +295,7 @@ int group_table_find(const GroupTable *t, AggGroup **groups,
 }
 
 /* Insert group `gi` (keys already stored in groups[gi]) keeping load <= 0.5. */
-const char* group_table_insert(Arena *arena, GroupTable *t, AggGroup **groups,
+const char* group_table_insert(QArena *arena, GroupTable *t, AggGroup **groups,
                                       int gi, int group_count, int k) {
     if ((t->count + 1) * 2 > t->cap) {
         const char *err = group_table_grow(arena, t, groups, group_count, k);
@@ -309,21 +309,21 @@ const char* group_table_insert(Arena *arena, GroupTable *t, AggGroup **groups,
 }
 
 /* Create a group with k key slots and spec_count accumulator states. */
-AggGroup* agg_group_create(int k, int spec_count, Arena *arena) {
+AggGroup* agg_group_create(int k, int spec_count, QArena *arena) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(AggGroup), &mem);
-    if (ar != ARENA_OK) return NULL;
+    QArenaResult ar = qarena_alloc(arena, sizeof(AggGroup), &mem);
+    if (ar != QARENA_OK) return NULL;
     AggGroup *g = (AggGroup*)mem;
     g->keys = NULL;
     if (k > 0) {
-        ar = arena_alloc(arena, sizeof(EvalResult) * (size_t)k, &mem);
-        if (ar != ARENA_OK) return NULL;
+        ar = qarena_alloc(arena, sizeof(EvalResult) * (size_t)k, &mem);
+        if (ar != QARENA_OK) return NULL;
         g->keys = (EvalResult*)mem;
     }
     g->states = NULL;
     if (spec_count > 0) {
-        ar = arena_alloc(arena, sizeof(AggState) * (size_t)spec_count, &mem);
-        if (ar != ARENA_OK) return NULL;
+        ar = qarena_alloc(arena, sizeof(AggState) * (size_t)spec_count, &mem);
+        if (ar != QARENA_OK) return NULL;
         g->states = (AggState*)mem;
         for (int i = 0; i < spec_count; i++) {
             agg_state_init(&g->states[i]);
@@ -336,14 +336,14 @@ g->rep.fields = NULL;
 
 const char* finalize_groups(QueryResult *result, AggGroup **groups, int group_count,
                                    AggSpec *specs, int spec_count, OutputCol *out_cols,
-                                   int out_count, int k, SelectStmt *stmt, Arena *arena,
-                                   Arena *tmp,
+                                   int out_count, int k, SelectStmt *stmt, QArena *arena,
+                                   QArena *tmp,
                                    char **headers, int header_count,
                                    EvalResult **sort_keys, int *sort_keys_cap,
                                    int *capacity) {
     for (int gi = 0; gi < group_count; gi++) {
         AggGroup *g = groups[gi];
-        arena_reset(tmp);
+        qarena_reset(tmp);
 
         AggContext agg_ctx;
         agg_ctx.specs = specs;

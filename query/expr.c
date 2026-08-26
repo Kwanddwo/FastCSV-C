@@ -101,15 +101,15 @@ ExprNode* parse_expression(Parser *parser) {
 ExprNode** parse_expr_list(Parser *parser, int *out_count, const char *item_msg) {
     int capacity = LIST_INITIAL_CAPACITY;
     void *mem;
-    ArenaResult ar = arena_alloc(parser->arena, sizeof(ExprNode*) * (size_t)capacity, &mem);
-    if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    QArenaResult ar = qarena_alloc(parser->arena, sizeof(ExprNode*) * (size_t)capacity, &mem);
+    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
     ExprNode **items = (ExprNode**)mem;
     int count = 0;
 
     for (;;) {
         if (count >= capacity) {
             capacity *= 2;
-            mem = arena_realloc(parser->arena, items,
+            mem = qarena_realloc(parser->arena, items,
                                 sizeof(ExprNode*) * (size_t)(capacity / 2),
                                 sizeof(ExprNode*) * (size_t)capacity);
             if (mem == NULL) { error_at_current(parser, "Out of memory."); return NULL; }
@@ -127,7 +127,7 @@ ExprNode** parse_expr_list(Parser *parser, int *out_count, const char *item_msg)
 static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
     ExprNode *node = alloc_expr_node(parser);
     node->type = EXPR_FUNCTION_CALL;
-    node->str_value = arena_strdup(parser->arena, func_name);
+    node->str_value = qarena_strdup(parser->arena, func_name);
     node->distinct = match(parser, TOKEN_DISTINCT);
 
     if (match(parser, TOKEN_RPAREN)) {
@@ -140,8 +140,8 @@ static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
        separated by IN, not a comma. */
     if (str_ieq(func_name, "POSITION")) {
         void *mem;
-        ArenaResult ar = arena_alloc(parser->arena, sizeof(ExprNode*) * 2, &mem);
-        if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return node; }
+        QArenaResult ar = qarena_alloc(parser->arena, sizeof(ExprNode*) * 2, &mem);
+        if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return node; }
         ExprNode **args = (ExprNode**)mem;
         args[0] = parse_expression(parser);
         consume(parser, TOKEN_IN, "Expected 'IN' in POSITION(substring IN string).");
@@ -223,6 +223,13 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
     if (match(parser, TOKEN_NUMBER)) {
         ExprNode *node = make_leaf(parser, EXPR_LITERAL_NUMBER);
         node->str_value = copy_lexeme(parser, parser->previous.lexeme, parser->previous.length);
+        /* A NULL lexeme here means the arena ran out of memory; the recorded
+           error prevents execution, so bail out instead of crashing strtod. */
+        if (node->str_value == NULL) {
+            record_error(parser, "Out of memory.", parser->current.line,
+                         parser->current.column);
+            return &parser->oom_node;
+        }
         node->num_value = strtod(node->str_value, NULL);
         return node;
     }
@@ -310,8 +317,8 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
         if (match(parser, TOKEN_DOT)) {
             consume(parser, TOKEN_IDENTIFIER, "Expected column name after '.'.");
             char *col = copy_lexeme(parser, parser->previous.lexeme, parser->previous.length);
-            char *qualified = arena_concat(parser, name, ".");
-            char *full = arena_concat(parser, qualified, col);
+            char *qualified = qarena_concat(parser, name, ".");
+            char *full = qarena_concat(parser, qualified, col);
             ExprNode *node = make_leaf(parser, EXPR_COLUMN_REF);
             node->str_value = full;
             return node;
@@ -344,8 +351,8 @@ static ExprNode* parse_case_expression(Parser *parser) {
 
     do {
         CaseWhen *cw;
-        ArenaResult ar = arena_alloc(parser->arena, sizeof(CaseWhen), (void**)&cw);
-        if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return make_error_node(parser, "Out of memory."); }
+        QArenaResult ar = qarena_alloc(parser->arena, sizeof(CaseWhen), (void**)&cw);
+        if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return make_error_node(parser, "Out of memory."); }
         cw->condition = NULL;
         cw->result = NULL;
         cw->next = NULL;

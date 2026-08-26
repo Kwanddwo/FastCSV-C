@@ -4,7 +4,7 @@ LDFLAGS = -shared
 
 # Library source files
 LIB_SOURCES = arena.c csv_config.c csv_utils.c csv_parser.c csv_writer.c csv_reader.c \
-              query/scanner.c query/parser.c query/expr.c query/query.c \
+              query/qarena.c query/scanner.c query/parser.c query/expr.c query/query.c \
               query/eval.c query/aggregate.c query/sort.c query/dedupe.c \
               query/validate.c query/record.c query/fold.c query/date.c query/executor.c
 LIB_OBJECTS = $(LIB_SOURCES:.c=.o)

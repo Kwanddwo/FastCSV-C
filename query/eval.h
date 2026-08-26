@@ -1,7 +1,7 @@
 #ifndef QUERY_EVAL_H
 #define QUERY_EVAL_H
 
-#include "../arena.h"
+#include "qarena.h"
 #include "../csv_reader.h"
 #include "ast.h"
 #include <stdbool.h>
@@ -32,8 +32,8 @@ typedef struct {
     CSVRecord *record;
     char **headers;
     int header_count;
-    Arena *arena;    /* result arena: persistent outputs are copied here */
-    Arena *tmp;      /* temp arena: per-row transient evaluation scratch */
+    QArena *arena;    /* result arena: persistent outputs are copied here */
+    QArena *tmp;      /* temp arena: per-row transient evaluation scratch */
     const AggContext *agg;
 } EvalCtx;
 
@@ -53,11 +53,11 @@ bool parse_numeric_str(const EvalResult *r, double *out);
    NULL < numeric-like < text. Two values are "equal" when this returns 0. */
 int eval_result_compare(const EvalResult *a, const EvalResult *b);
 
-/* Arena-owning copy of a string result; NULL-safe. */
-const char* eval_result_dup_to_arena(const EvalResult *r, Arena *arena);
+/* QArena-owning copy of a string result; NULL-safe. */
+const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena);
 
 /* Format a value for display (arena-allocated string). */
-const char* eval_result_to_string(const EvalResult *r, Arena *arena);
+const char* eval_result_to_string(const EvalResult *r, QArena *arena);
 
 /* ===== LIKE pattern matching ===== */
 bool like_match(const char *s, const char *p, bool case_insensitive);
@@ -71,6 +71,6 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx);
 /* Build the evaluation context for one row (agg is NULL outside of
    aggregate finalization). */
 EvalCtx eval_ctx_for(CSVRecord *record, char **headers, int header_count,
-                     Arena *arena, Arena *tmp, const AggContext *agg);
+                     QArena *arena, QArena *tmp, const AggContext *agg);
 
 #endif

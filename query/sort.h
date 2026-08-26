@@ -1,7 +1,7 @@
 #ifndef QUERY_SORT_H
 #define QUERY_SORT_H
 
-#include "../arena.h"
+#include "qarena.h"
 #include "../csv_reader.h"
 #include "ast.h"
 #include "eval.h"
@@ -27,11 +27,11 @@ typedef struct {
     const OrderByItem *order_by;
 } TopK;
 
-const char* topk_init(Arena *arena, TopK *tk, int cap, int key_count,
+const char* topk_init(QArena *arena, TopK *tk, int cap, int key_count,
                       const OrderByItem *order_by);
 bool topk_would_keep(const TopK *tk, const EvalResult *keys);
-void topk_insert(Arena *arena, TopK *tk, CSVRecord *rec, const EvalResult *keys);
-const char* topk_emit(Arena *arena, TopK *tk, CSVRecord ***out, int *out_count);
+void topk_insert(QArena *arena, TopK *tk, CSVRecord *rec, const EvalResult *keys);
+const char* topk_emit(QArena *arena, TopK *tk, CSVRecord ***out, int *out_count);
 
 /* Evaluate ORDER BY keys for one row into the persistent sort-keys array. */
 const char* eval_sort_keys(EvalCtx *ctx, const OrderByItem *order_by, int k,
@@ -40,7 +40,7 @@ const char* eval_sort_keys(EvalCtx *ctx, const OrderByItem *order_by, int k,
 /* Materialize and sort every projected row by the pre-computed keys. */
 const char* order_records(CSVRecord ***records, int record_count, int k,
                           const EvalResult *sort_keys, const OrderByItem *order_by,
-                          Arena *arena);
+                          QArena *arena);
 
 /* Apply LIMIT / OFFSET in place. */
 void apply_limit_offset(SelectStmt *stmt, CSVRecord **records, int *record_count);

@@ -23,17 +23,17 @@ bool records_equal(const CSVRecord *a, const CSVRecord *b) {
     return true;
 }
 
-CSVRecord copy_record(CSVRecord *src, Arena *arena) {
+CSVRecord copy_record(CSVRecord *src, QArena *arena) {
     CSVRecord out;
     out.field_count = src ? src->field_count : 0;
     out.fields = NULL;
     if (src == NULL || out.field_count == 0) return out;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(char*) * out.field_count, &mem);
-    if (ar != ARENA_OK) return out;
+    QArenaResult ar = qarena_alloc(arena, sizeof(char*) * out.field_count, &mem);
+    if (ar != QARENA_OK) return out;
     out.fields = (char**)mem;
     for (size_t i = 0; i < out.field_count; i++) {
-        out.fields[i] = arena_strdup(arena, src->fields[i] ? src->fields[i] : "");
+        out.fields[i] = qarena_strdup(arena, src->fields[i] ? src->fields[i] : "");
     }
     return out;
 }

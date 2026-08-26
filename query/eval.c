@@ -125,7 +125,7 @@ int eval_result_compare(const EvalResult *a, const EvalResult *b) {
 /* Duplicate an EvalResult's display value into the arena with a single
    copy (numeric values are formatted straight into the arena). Returns
    NULL on allocation failure. */
-const char* eval_result_dup_to_arena(const EvalResult *r, Arena *arena) {
+const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena) {
     if (r->is_error) return r->error ? r->error : "";
     if (r->is_null) return "NULL";
     if (r->is_numeric) {
@@ -140,18 +140,18 @@ const char* eval_result_dup_to_arena(const EvalResult *r, Arena *arena) {
         }
         size_t len = strlen(buf);
         void *mem;
-        ArenaResult ar = arena_alloc(arena, len + 1, &mem);
-        if (ar != ARENA_OK) return NULL;
+        QArenaResult ar = qarena_alloc(arena, len + 1, &mem);
+        if (ar != QARENA_OK) return NULL;
         char *out = (char*)mem;
         memcpy(out, buf, len);
         out[len] = '\0';
         return out;
     }
-    return arena_strdup(arena, r->str_val ? r->str_val : "");
+    return qarena_strdup(arena, r->str_val ? r->str_val : "");
 }
 
 /* Convert EvalResult to display string */
-const char* eval_result_to_string(const EvalResult *r, Arena *arena) {
+const char* eval_result_to_string(const EvalResult *r, QArena *arena) {
     if (r->is_error) return r->error ? r->error : "";
     if (r->is_null) return "NULL";
     if (r->is_numeric) return eval_result_dup_to_arena(r, arena);
@@ -240,7 +240,7 @@ static EvalResult fn_upper(EvalCtx *ctx, ExprNode **args, int arg_count) {
     EvalResult out;
     if (!eval_str_arg(ctx, args, arg_count, 0, &s, &out)) return out;
     size_t len = strlen(s);
-    char *res = arena_strdup(ctx->tmp, s);
+    char *res = qarena_strdup(ctx->tmp, s);
     if (!res) return eval_result_null();
     for (size_t i = 0; i < len; i++) res[i] = (char)toupper((unsigned char)res[i]);
     return eval_result_str(res);
@@ -251,7 +251,7 @@ static EvalResult fn_lower(EvalCtx *ctx, ExprNode **args, int arg_count) {
     EvalResult out;
     if (!eval_str_arg(ctx, args, arg_count, 0, &s, &out)) return out;
     size_t len = strlen(s);
-    char *res = arena_strdup(ctx->tmp, s);
+    char *res = qarena_strdup(ctx->tmp, s);
     if (!res) return eval_result_null();
     for (size_t i = 0; i < len; i++) res[i] = (char)tolower((unsigned char)res[i]);
     return eval_result_str(res);
@@ -275,8 +275,8 @@ static EvalResult fn_trim(EvalCtx *ctx, ExprNode **args, int arg_count) {
     while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
     size_t new_len = (size_t)(end - s + 1);
     char *res;
-    ArenaResult ar = arena_alloc(ctx->tmp, new_len + 1, (void**)&res);
-    if (ar != ARENA_OK) return eval_result_null();
+    QArenaResult ar = qarena_alloc(ctx->tmp, new_len + 1, (void**)&res);
+    if (ar != QARENA_OK) return eval_result_null();
     memcpy(res, s, new_len);
     res[new_len] = '\0';
     return eval_result_str(res);
@@ -304,8 +304,8 @@ static EvalResult fn_substr(EvalCtx *ctx, ExprNode **args, int arg_count) {
     size_t remaining = slen - offset;
     if (length >= 0 && (size_t)length < remaining) remaining = (size_t)length;
     char *res;
-    ArenaResult ar = arena_alloc(ctx->tmp, remaining + 1, (void**)&res);
-    if (ar != ARENA_OK) return eval_result_null();
+    QArenaResult ar = qarena_alloc(ctx->tmp, remaining + 1, (void**)&res);
+    if (ar != QARENA_OK) return eval_result_null();
     memcpy(res, s + offset, remaining);
     res[remaining] = '\0';
     return eval_result_str(res);
@@ -315,9 +315,9 @@ static EvalResult fn_concat(EvalCtx *ctx, ExprNode **args, int arg_count) {
     if (arg_count < 1) return eval_result_null();
     /* Evaluate every argument exactly once, then concatenate. */
     EvalResult *vals;
-    ArenaResult ar = arena_alloc(ctx->tmp, sizeof(EvalResult) * (size_t)arg_count,
+    QArenaResult ar = qarena_alloc(ctx->tmp, sizeof(EvalResult) * (size_t)arg_count,
                                  (void**)&vals);
-    if (ar != ARENA_OK) return eval_result_null();
+    if (ar != QARENA_OK) return eval_result_null();
     size_t total = 0;
     for (int i = 0; i < arg_count; i++) {
         vals[i] = eval_expr(args[i], ctx);
@@ -326,8 +326,8 @@ static EvalResult fn_concat(EvalCtx *ctx, ExprNode **args, int arg_count) {
         total += strlen(eval_result_to_string(&vals[i], ctx->tmp));
     }
     char *res;
-    ar = arena_alloc(ctx->tmp, total + 1, (void**)&res);
-    if (ar != ARENA_OK) return eval_result_null();
+    ar = qarena_alloc(ctx->tmp, total + 1, (void**)&res);
+    if (ar != QARENA_OK) return eval_result_null();
     size_t pos = 0;
     for (int i = 0; i < arg_count; i++) {
         if (vals[i].is_null) continue;
@@ -540,7 +540,7 @@ static EvalResult eval_function(const char *name, ExprNode **args, int arg_count
         char buf[256];
         snprintf(buf, sizeof(buf),
                  "Aggregate function '%s' is not supported in this context.", name);
-        return eval_result_error(arena_strdup(ctx->arena, buf));
+        return eval_result_error(qarena_strdup(ctx->arena, buf));
     }
 
     for (size_t i = 0; i < sizeof(funcs) / sizeof(funcs[0]); i++) {
@@ -553,7 +553,7 @@ static EvalResult eval_function(const char *name, ExprNode **args, int arg_count
     {
         char buf[256];
         snprintf(buf, sizeof(buf), "Unknown function: %s", name);
-        return eval_result_error(arena_strdup(ctx->arena, buf));
+        return eval_result_error(qarena_strdup(ctx->arena, buf));
     }
 }
 
@@ -782,7 +782,7 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Column '%s' not found in CSV headers.",
                          node->str_value);
-                const char *msg = arena_strdup(ctx->arena, buf);
+                const char *msg = qarena_strdup(ctx->arena, buf);
                 return eval_result_error(msg ? msg : "Column not found in CSV headers.");
             }
             /* A row may have fewer fields than the header (ragged CSV): absent. */
@@ -896,7 +896,7 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
 
 /* Build the evaluation context for one row. */
 EvalCtx eval_ctx_for(CSVRecord *record, char **headers, int header_count,
-                            Arena *arena, Arena *tmp, const AggContext *agg) {
+                            QArena *arena, QArena *tmp, const AggContext *agg) {
     EvalCtx ctx;
     ctx.record = record;
     ctx.headers = headers;

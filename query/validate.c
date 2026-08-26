@@ -136,11 +136,11 @@ static bool has_valid_column_refs(ExprNode *node, char **headers, int header_cou
 /* Validate an expression's column refs, returning an arena-owned error string
    or NULL if valid. */
 const char* validate_columns(ExprNode *expr, char **headers, int header_count,
-                                    Arena *arena, const char **bad_col) {
+                                    QArena *arena, const char **bad_col) {
     if (!has_valid_column_refs(expr, headers, header_count, bad_col)) {
         char buf[256];
         snprintf(buf, sizeof(buf), "Column '%s' not found in CSV headers.", *bad_col);
-        char *msg = arena_strdup(arena, buf);
+        char *msg = qarena_strdup(arena, buf);
         return msg ? msg : "Column not found in CSV headers.";
     }
     return NULL;
@@ -151,7 +151,7 @@ typedef struct {
     AggSpec **specs;
     int *count;
     int *cap;
-    Arena *arena;
+    QArena *arena;
 } CollectSpecsUD;
 
 static ExprVisit collect_specs_visit(ExprNode *node, void *ud) {
@@ -159,7 +159,7 @@ static ExprVisit collect_specs_visit(ExprNode *node, void *ud) {
     if (node->type == EXPR_FUNCTION_CALL && is_aggregate_name(node->str_value)) {
         if (*u->count >= *u->cap) {
             *u->cap = *u->cap ? *u->cap * 2 : SPECS_INITIAL_CAPACITY;
-            void *mem = arena_realloc(u->arena, *u->specs,
+            void *mem = qarena_realloc(u->arena, *u->specs,
                                       sizeof(AggSpec) * (size_t)(*u->cap / 2),
                                       sizeof(AggSpec) * (size_t)*u->cap);
             if (mem == NULL) return EXPR_VISIT_PRUNE;
@@ -176,7 +176,7 @@ static ExprVisit collect_specs_visit(ExprNode *node, void *ud) {
 }
 
 void collect_specs(ExprNode *node, AggSpec **specs, int *spec_count,
-                          int *spec_cap, Arena *arena) {
+                          int *spec_cap, QArena *arena) {
     CollectSpecsUD u = { specs, spec_count, spec_cap, arena };
     expr_walk(node, collect_specs_visit, &u);
 }
@@ -186,7 +186,7 @@ typedef struct {
     char ***names;
     int *count;
     int *cap;
-    Arena *arena;
+    QArena *arena;
 } CollectRefsUD;
 
 static ExprVisit collect_column_refs_visit(ExprNode *node, void *ud) {
@@ -194,7 +194,7 @@ static ExprVisit collect_column_refs_visit(ExprNode *node, void *ud) {
     if (node->type == EXPR_COLUMN_REF && node->str_value) {
         if (*u->count >= *u->cap) {
             *u->cap = *u->cap ? *u->cap * 2 : COL_REFS_INITIAL_CAPACITY;
-            void *mem = arena_realloc(u->arena, *u->names,
+            void *mem = qarena_realloc(u->arena, *u->names,
                                       sizeof(char*) * (size_t)(*u->cap / 2),
                                       sizeof(char*) * (size_t)*u->cap);
             if (mem == NULL) return EXPR_VISIT_PRUNE;
@@ -207,7 +207,7 @@ static ExprVisit collect_column_refs_visit(ExprNode *node, void *ud) {
 }
 
 void collect_column_refs(ExprNode *node, char ***names, int *count, int *cap,
-                                Arena *arena) {
+                                QArena *arena) {
     CollectRefsUD u = { names, count, cap, arena };
     expr_walk(node, collect_column_refs_visit, &u);
 }
@@ -237,13 +237,13 @@ bool expr_grouped_valid(ExprNode *node, char **grouped, int grouped_count) {
 }
 
 /* ===== Generate column ref ExprNode for star expansion ===== */
-ExprNode* make_column_ref_node(Arena *arena, const char *name) {
+ExprNode* make_column_ref_node(QArena *arena, const char *name) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(ExprNode), &mem);
-    if (ar != ARENA_OK) return NULL;
+    QArenaResult ar = qarena_alloc(arena, sizeof(ExprNode), &mem);
+    if (ar != QARENA_OK) return NULL;
     ExprNode *node = (ExprNode*)mem;
     node->type = EXPR_COLUMN_REF;
-    node->str_value = arena_strdup(arena, name);
+    node->str_value = qarena_strdup(arena, name);
     node->num_value = 0.0;
     node->col_index = -1;
     node->left = NULL;
@@ -258,7 +258,7 @@ ExprNode* make_column_ref_node(Arena *arena, const char *name) {
 }
 
 const char* validate_stmt(SelectStmt *stmt, char **headers, int header_count,
-                                 Arena *arena, const char **bad_col) {
+                                 QArena *arena, const char **bad_col) {
     for (int i = 0; i < stmt->item_count; i++) {
         const char *err = validate_columns(stmt->items[i].expr, headers,
                                            header_count, arena, bad_col);
@@ -303,7 +303,7 @@ const char* validate_stmt(SelectStmt *stmt, char **headers, int header_count,
 }
 const char* validate_grouping(SelectStmt *stmt, OutputCol *out_cols, int out_count,
                                      char **grouped_cols, int grouped_col_count,
-                                     bool grouped, bool group_mode, Arena *arena) {
+                                     bool grouped, bool group_mode, QArena *arena) {
     if (grouped) {
         if (group_mode) {
             /* Standard SQL: every non-aggregate column ref must be grouped */
@@ -329,7 +329,7 @@ const char* validate_grouping(SelectStmt *stmt, OutputCol *out_cols, int out_cou
                              "Non-aggregate expression '%s' in aggregate query "
                              "requires GROUP BY (not supported).",
                              out_cols[i].name ? out_cols[i].name : "");
-                    char *msg = arena_strdup(arena, buf);
+                    char *msg = qarena_strdup(arena, buf);
                     return msg ? msg : "Non-aggregate expression in aggregate query.";
                 }
             }

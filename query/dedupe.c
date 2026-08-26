@@ -17,17 +17,17 @@ static size_t next_pow2(size_t n) {
    Expected O(n): each record is hashed once into a precomputed array and
    resolved through an open-addressing table sized for load <= 0.5. */
 const char* dedupe_records(CSVRecord ***records, int *record_count, int k,
-                                  EvalResult *sort_keys, Arena *arena) {
+                                  EvalResult *sort_keys, QArena *arena) {
     int n = *record_count;
     if (n <= 1) return NULL;
 
     size_t cap = next_pow2((size_t)n * 2);
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(uint64_t) * (size_t)n, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(uint64_t) * (size_t)n, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     uint64_t *hashes = (uint64_t*)mem;
-    ar = arena_alloc(arena, sizeof(int) * cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(int) * cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     int *table = (int*)mem;
     for (size_t i = 0; i < cap; i++) table[i] = -1;
 
@@ -69,25 +69,25 @@ const char* dedupe_records(CSVRecord ***records, int *record_count, int k,
    array; hashes holds each distinct record's hash. Kept at load <= 0.5,
    doubling and rehashing on growth. */
 
-const char* record_set_init(Arena *arena, RecordSet *set) {
+const char* record_set_init(QArena *arena, RecordSet *set) {
     set->cap = 32;
     set->count = 0;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)set->cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)set->cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     set->slots = (int*)mem;
     for (int i = 0; i < set->cap; i++) set->slots[i] = -1;
-    ar = arena_alloc(arena, sizeof(uint64_t) * (size_t)set->cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    ar = qarena_alloc(arena, sizeof(uint64_t) * (size_t)set->cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     set->hashes = (uint64_t*)mem;
     return NULL;
 }
 
-static const char* record_set_grow(Arena *arena, RecordSet *set) {
+static const char* record_set_grow(QArena *arena, RecordSet *set) {
     int new_cap = set->cap * 2;
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
-    if (ar != ARENA_OK) return "Out of memory.";
+    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
     int *slots = (int*)mem;
     for (int i = 0; i < new_cap; i++) slots[i] = -1;
     for (int i = 0; i < set->count; i++) {
@@ -96,7 +96,7 @@ static const char* record_set_grow(Arena *arena, RecordSet *set) {
         while (slots[slot] != -1) slot = (slot + 1) & (uint64_t)(new_cap - 1);
         slots[slot] = i;
     }
-    uint64_t *new_hashes = (uint64_t*)arena_realloc(
+    uint64_t *new_hashes = (uint64_t*)qarena_realloc(
         arena, set->hashes, sizeof(uint64_t) * (size_t)set->cap,
         sizeof(uint64_t) * (size_t)new_cap);
     if (new_hashes == NULL) return "Out of memory.";
@@ -109,7 +109,7 @@ static const char* record_set_grow(Arena *arena, RecordSet *set) {
 /* Add rec to the set if it is not a duplicate of an already-stored record.
    Returns true when stored (at records[count]); false when it was a duplicate
    (with *err unchanged). On allocation failure returns false with *err set. */
-bool record_set_add(RecordSet *set, Arena *arena, CSVRecord **records,
+bool record_set_add(RecordSet *set, QArena *arena, CSVRecord **records,
                            CSVRecord *rec, const char **err) {
     *err = NULL;
     uint64_t h = hash_record(rec);

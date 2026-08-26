@@ -13,7 +13,7 @@
 #define MAX_PARSE_ERRORS 50
 
 /* ===== Init ===== */
-Parser parser_init(const char *source, Arena *arena, ParseErrorList *errors) {
+Parser parser_init(const char *source, QArena *arena, ParseErrorList *errors) {
     Parser parser;
     parser.scanner = scanner_init(source);
     parser.current.type = TOKEN_EOF;
@@ -31,10 +31,10 @@ Parser parser_init(const char *source, Arena *arena, ParseErrorList *errors) {
 }
 
 /* ===== ParseErrorList implementation ===== */
-ParseErrorList* parse_error_list_init(Arena *arena) {
+ParseErrorList* parse_error_list_init(QArena *arena) {
     void *mem;
-    ArenaResult ar = arena_alloc(arena, sizeof(ParseErrorList), &mem);
-    if (ar != ARENA_OK) return NULL;
+    QArenaResult ar = qarena_alloc(arena, sizeof(ParseErrorList), &mem);
+    if (ar != QARENA_OK) return NULL;
     ParseErrorList *list = (ParseErrorList*)mem;
     list->errors = NULL;
     list->error_lines = NULL;
@@ -63,19 +63,19 @@ void record_error(Parser *parser, const char *msg, int line, int col) {
         int new_cap = list->capacity ? list->capacity * 2 : LIST_INITIAL_CAPACITY;
         if (new_cap > MAX_PARSE_ERRORS) new_cap = MAX_PARSE_ERRORS;
 
-        const char **new_errors = (const char**)arena_realloc(
+        const char **new_errors = (const char**)qarena_realloc(
             parser->arena, list->errors,
             sizeof(const char*) * (size_t)list->capacity,
             sizeof(const char*) * (size_t)new_cap);
         if (new_errors == NULL) return;
 
-        int *new_lines = (int*)arena_realloc(
+        int *new_lines = (int*)qarena_realloc(
             parser->arena, list->error_lines,
             sizeof(int) * (size_t)list->capacity,
             sizeof(int) * (size_t)new_cap);
         if (new_lines == NULL) return;
 
-        int *new_cols = (int*)arena_realloc(
+        int *new_cols = (int*)qarena_realloc(
             parser->arena, list->error_columns,
             sizeof(int) * (size_t)list->capacity,
             sizeof(int) * (size_t)new_cap);
@@ -89,7 +89,7 @@ void record_error(Parser *parser, const char *msg, int line, int col) {
         list->capacity = new_cap;
     }
 
-    const char *stored = arena_strdup(parser->arena, msg);
+    const char *stored = qarena_strdup(parser->arena, msg);
     if (stored == NULL) stored = "Out of memory.";
     list->errors[list->count] = stored;
     list->error_lines[list->count] = line;
@@ -182,13 +182,13 @@ ExprNode* make_error_node(Parser *parser, const char *msg) {
     return alloc_expr_node(parser);
 }
 
-/* ===== Arena string helpers ===== */
+/* ===== QArena string helpers ===== */
 char* copy_lexeme(Parser *parser, const char *lexeme, int length) {
     if (lexeme == NULL) { lexeme = ""; length = 0; }
     if (length < 0) length = 0;
     void *mem;
-    ArenaResult ar = arena_alloc(parser->arena, (size_t)length + 1, &mem);
-    if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    QArenaResult ar = qarena_alloc(parser->arena, (size_t)length + 1, &mem);
+    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
     char *str = (char*)mem;
     memcpy(str, lexeme, (size_t)length);
     str[length] = '\0';
@@ -200,8 +200,8 @@ char* copy_string_literal(Parser *parser, const char *start, int length) {
     int content_length = length - 2;
     if (content_length < 0) content_length = 0;
     void *mem;
-    ArenaResult ar = arena_alloc(parser->arena, (size_t)content_length + 1, &mem);
-    if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    QArenaResult ar = qarena_alloc(parser->arena, (size_t)content_length + 1, &mem);
+    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
     char *str = (char*)mem;
     /* Copy the text between the surrounding quotes, collapsing '' into '. */
     int out = 0;
@@ -217,12 +217,12 @@ char* copy_string_literal(Parser *parser, const char *start, int length) {
     return str;
 }
 
-char* arena_concat(Parser *parser, const char *a, const char *b) {
+char* qarena_concat(Parser *parser, const char *a, const char *b) {
     size_t alen = strlen(a);
     size_t blen = strlen(b);
     void *mem;
-    ArenaResult ar = arena_alloc(parser->arena, alen + blen + 1, &mem);
-    if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    QArenaResult ar = qarena_alloc(parser->arena, alen + blen + 1, &mem);
+    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
     char *str = (char*)mem;
     memcpy(str, a, alen);
     memcpy(str + alen, b, blen);
@@ -233,8 +233,8 @@ char* arena_concat(Parser *parser, const char *a, const char *b) {
 /* ===== AST node allocators ===== */
 ExprNode* alloc_expr_node(Parser *parser) {
     void *mem;
-    ArenaResult ar = arena_alloc(parser->arena, sizeof(ExprNode), &mem);
-    if (ar != ARENA_OK) {
+    QArenaResult ar = qarena_alloc(parser->arena, sizeof(ExprNode), &mem);
+    if (ar != QARENA_OK) {
         /* Fall back to a shared sentinel. Any recorded error prevents
            execution, so the placeholder tree is never evaluated. */
         record_error(parser, "Out of memory.", parser->current.line, parser->current.column);
@@ -272,7 +272,7 @@ static bool ensure_capacity(Parser *parser, void **array, int *capacity,
                             int count, size_t elem_size) {
     if (count < *capacity) return true;
     int new_cap = *capacity ? *capacity * 2 : LIST_INITIAL_CAPACITY;
-    void *mem = arena_realloc(parser->arena, *array,
+    void *mem = qarena_realloc(parser->arena, *array,
                               elem_size * (size_t)*capacity,
                               elem_size * (size_t)new_cap);
     if (mem == NULL) { error_at_current(parser, "Out of memory."); return false; }
@@ -535,8 +535,8 @@ SelectStmt* parse_select_query(Parser *parser) {
     }
 
     void *mem;
-    ArenaResult ar = arena_alloc(parser->arena, sizeof(SelectStmt), &mem);
-    if (ar != ARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    QArenaResult ar = qarena_alloc(parser->arena, sizeof(SelectStmt), &mem);
+    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
     SelectStmt *stmt = select_stmt_init(mem, distinct);
 
     stmt->items = parse_select_list(parser, &stmt->item_count);
@@ -579,7 +579,7 @@ SelectStmt* parse_select_query(Parser *parser) {
 }
 
 /* ===== Public API ===== */
-SelectStmt* parse_select(const char *source, Arena *arena, ParseErrorList *errors) {
+SelectStmt* parse_select(const char *source, QArena *arena, ParseErrorList *errors) {
     Parser parser = parser_init(source, arena, errors);
 
     advance(&parser);
