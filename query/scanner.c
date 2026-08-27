@@ -110,6 +110,7 @@ static TokenType keyword_type(const char *start, int length) {
             if (str_nieq(start, "SELECT", 6)) return TOKEN_SELECT;
             if (str_nieq(start, "OFFSET", 6)) return TOKEN_OFFSET;
             if (str_nieq(start, "HAVING", 6)) return TOKEN_HAVING;
+            if (str_nieq(start, "ESCAPE", 6)) return TOKEN_ESCAPE;
             break;
         case 7:
             if (str_nieq(start, "BETWEEN", 7)) return TOKEN_BETWEEN;

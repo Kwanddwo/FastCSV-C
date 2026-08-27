@@ -536,16 +536,23 @@ static ExprNode* parse_primary_condition(Parser *parser) {
         return node;
     }
 
-    /* LIKE */
-    if (match(parser, TOKEN_LIKE)) {
+    /* LIKE / ILIKE, with an optional SQL-standard ESCAPE character:
+       `expr LIKE pattern [ESCAPE esc]`. The escape expression is stored in
+       node->mid. */
+    if (match(parser, TOKEN_LIKE) || match(parser, TOKEN_ILIKE)) {
+        bool ilike = parser->previous.type == TOKEN_ILIKE;
         ExprNode *pattern = parse_expression(parser);
-        return make_binary(parser, EXPR_LIKE, expr, pattern);
-    }
-
-    /* ILIKE */
-    if (match(parser, TOKEN_ILIKE)) {
-        ExprNode *pattern = parse_expression(parser);
-        return make_binary(parser, EXPR_ILIKE, expr, pattern);
+        ExprNode *esc = NULL;
+        if (match(parser, TOKEN_ESCAPE)) {
+            esc = parse_expression(parser);
+        }
+        ExprNode *node = alloc_expr_node(parser);
+        if (node == NULL) return NULL;
+        node->type = ilike ? EXPR_ILIKE : EXPR_LIKE;
+        node->left = expr;
+        node->right = pattern;
+        node->mid = esc;
+        return node;
     }
 
     /* IS [NOT] NULL — the only NULL test that never yields UNKNOWN */

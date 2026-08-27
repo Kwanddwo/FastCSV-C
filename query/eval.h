@@ -64,7 +64,9 @@ const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena);
 const char* eval_result_to_string(const EvalResult *r, QArena *arena);
 
 /* ===== LIKE pattern matching ===== */
-bool like_match(const char *s, const char *p, bool case_insensitive);
+/* Match s against the pattern p; esc (0 = none) is the ESCAPE character
+   making the next pattern character literal. */
+bool like_match(const char *s, const char *p, char esc, bool case_insensitive);
 
 /* ===== Built-in functions ===== */
 bool is_aggregate_name(const char *name);

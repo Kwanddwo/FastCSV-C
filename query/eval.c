@@ -190,14 +190,34 @@ const char* eval_result_to_string(const EvalResult *r, QArena *arena) {
 
 
 /* ===== LIKE pattern matching ===== */
-bool like_match(const char *s, const char *p, bool case_insensitive) {
-    /* Iterative greedy matcher: on a mismatch after a '%', retry with the
-       '%' matching one more character. Avoids the exponential backtracking
-       of a recursive implementation while preserving identical semantics. */
+/* Iterative greedy matcher: on a mismatch after a '%', retry with the
+   '%' matching one more character. Avoids the exponential backtracking
+   of a recursive implementation while preserving identical semantics.
+   An escape character (esc != 0, SQL-standard ESCAPE) makes the following
+   pattern character literal, so '%', '_' and the escape char itself can
+   match literally. */
+bool like_match(const char *s, const char *p, char esc, bool case_insensitive) {
     const char *star_p = NULL;   /* pattern position after the last '%' */
     const char *star_s = NULL;   /* string position the last '%' matched */
 
     while (*s) {
+        /* An escaped pattern character matches only that literal character;
+           the escape never matches by itself. */
+        if (esc != 0 && *p == esc && p[1] != '\0') {
+            bool eq = case_insensitive
+                          ? (toupper((unsigned char)*s) == toupper((unsigned char)p[1]))
+                          : (*s == p[1]);
+            if (eq) {
+                s++;
+                p += 2;
+            } else if (star_p) {
+                p = star_p + 1;
+                s = ++star_s;
+            } else {
+                return false;
+            }
+            continue;
+        }
         if (*p == '_') {
             s++;
             p++;
@@ -220,9 +240,21 @@ bool like_match(const char *s, const char *p, bool case_insensitive) {
         }
     }
 
-    /* String exhausted: only trailing '%'s may remain in the pattern. */
-    while (*p == '%') p++;
-    return *p == '\0';
+    /* String exhausted: only trailing '%'s (or escaped literals after
+       them) may remain in the pattern. */
+    while (*p) {
+        if (*p == '%') {
+            p++;
+        } else if (esc != 0 && *p == esc && p[1] != '\0') {
+            /* Escaped literal at the tail: the string is already exhausted,
+               so it can only match an empty string — which it cannot (the
+               escape consumed a character). */
+            return false;
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* ===== Argument evaluation helpers ===== */
@@ -736,9 +768,26 @@ static EvalResult eval_like(ExprNode *node, EvalCtx *ctx, bool case_insensitive)
     EvalResult p = eval_expr(node->right, ctx);
     if (eval_result_is_error(&p)) return p;
     if (v.is_null || p.is_null) return eval_result_null();   /* UNKNOWN, not FALSE */
+
+    char esc = 0;
+    if (node->mid != NULL) {
+        EvalResult e = eval_expr(node->mid, ctx);
+        if (eval_result_is_error(&e)) return e;
+        if (e.is_null) return eval_result_null();   /* UNKNOWN */
+        const char *es = eval_result_to_string(&e, ctx->tmp);
+        if (strlen(es) != 1) {
+            return eval_result_error("ESCAPE expression must be a single character.");
+        }
+        esc = es[0];
+    }
+
     const char *val_str = eval_result_to_string(&v, ctx->tmp);
     const char *pat_str = eval_result_to_string(&p, ctx->tmp);
-    return eval_result_num((double)like_match(val_str, pat_str, case_insensitive));
+    size_t plen = strlen(pat_str);
+    if (esc != 0 && plen > 0 && pat_str[plen - 1] == esc) {
+        return eval_result_error("LIKE pattern must not end with escape character.");
+    }
+    return eval_result_num((double)like_match(val_str, pat_str, esc, case_insensitive));
 }
 
 static EvalResult eval_between(ExprNode *node, EvalCtx *ctx) {
@@ -954,6 +1003,11 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
         /* ===== Subquery ===== */
         case EXPR_SUBQUERY:
             return eval_result_error("Subqueries are not supported in expressions.");
+
+        /* Unreachable: the executor resolves these against the expanded
+           output columns before evaluation. */
+        case EXPR_ORDER_ORDINAL:
+            return eval_result_error("ORDER BY position could not be resolved.");
     }
 
     return eval_result_null();

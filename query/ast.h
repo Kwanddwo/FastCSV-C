@@ -65,6 +65,11 @@ typedef enum {
     EXPR_FUNCTION_CALL,
     EXPR_CASE,
     EXPR_SUBQUERY,
+
+    /* ORDER BY positional reference to a select item that is '*': the
+       executor resolves it against the star-expanded output columns
+       (num_value holds the 1-based result-column ordinal). */
+    EXPR_ORDER_ORDINAL,
 } ExprType;
 
 /* ===== CASE WHEN clause ===== */

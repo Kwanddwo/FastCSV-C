@@ -527,6 +527,31 @@ static void test_search_like(void) {
     test_query("SELECT * FROM 'query/data/students.csv' WHERE city ILIKE 'l%'", 2);
 }
 
+/* SQL-standard LIKE/ILIKE ESCAPE: % and _ become literal after the escape
+   character, which itself can be escaped. */
+static void test_like_escape(void) {
+    printf("--- LIKE / ILIKE ESCAPE\n");
+
+    /* Escaped '_' matches literally; without the escape it is a wildcard. */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'a_b' LIKE 'a\\_b' ESCAPE '\\'", 5);
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'axb' LIKE 'a\\_b' ESCAPE '\\'", 0);
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'a_b' LIKE 'a_b'", 5);
+    /* Escaped '%' matches literally. */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE '100%' LIKE '100\\%' ESCAPE '\\'", 5);
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE '100x' LIKE '100\\%' ESCAPE '\\'", 0);
+    /* The escape character itself can be matched literally. */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'a\\b' LIKE 'a\\\\b' ESCAPE '\\'", 5);
+    /* Non-single-character escape is an error. */
+    test_query_error("SELECT 1 FROM 'query/data/students.csv' WHERE 'a' LIKE 'a' ESCAPE 'ab'", "single character");
+    /* A NULL escape yields UNKNOWN. */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE name LIKE 'A%' ESCAPE NULL", 0);
+    /* A pattern ending in the escape character is an error. */
+    test_query_error("SELECT 1 FROM 'query/data/students.csv' WHERE 'a' LIKE 'a\\' ESCAPE '\\'", "must not end");
+    /* ILIKE accepts ESCAPE too (case-insensitive matching preserved). */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'a_bc' ILIKE 'a\\_Bc' ESCAPE '\\'", 5);
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'abc' ILIKE 'a_c'", 5);
+}
+
 /* =================================================================
  * 23. AND / OR / precedence
  * ================================================================= */
@@ -938,6 +963,37 @@ static void test_concat_operator(void) {
     test_query_value("SELECT 6 || 3 FROM 'query/data/students.csv' LIMIT 1", "63");
 }
 
+/* Only COUNT accepts '*': SUM/AVG/MIN/MAX(*) must be rejected instead of
+   silently evaluating '*' as text (SUM/AVG → NULL, MIN/MAX → "*"). */
+static void test_star_aggregates(void) {
+    printf("--- '*' only allowed with COUNT\n");
+
+    test_query_error("SELECT SUM(*) FROM 'query/data/students.csv'", "only allowed with COUNT");
+    test_query_error("SELECT AVG(*) FROM 'query/data/students.csv'", "only allowed with COUNT");
+    test_query_error("SELECT MIN(*) FROM 'query/data/students.csv'", "only allowed with COUNT");
+    test_query_error("SELECT MAX(*) FROM 'query/data/students.csv'", "only allowed with COUNT");
+    test_query_error("SELECT COUNT(*), SUM(*) FROM 'query/data/students.csv'", "only allowed with COUNT");
+    /* COUNT(*) and COUNT(DISTINCT *) keep their behavior. */
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv'", 1);
+    test_query_error("SELECT COUNT(DISTINCT *) FROM 'query/data/students.csv'", "cannot be applied");
+}
+
+/* ORDER BY <ordinal> over a '*' select item resolves against the expanded
+   result columns (standard), instead of silently sorting by a constant. */
+static void test_order_by_star_ordinal(void) {
+    printf("--- ORDER BY ordinal over '*'\n");
+
+    test_query_value("SELECT * FROM 'query/data/students.csv' ORDER BY 1 LIMIT 1", "Alice");
+    test_query_value("SELECT * FROM 'query/data/students.csv' ORDER BY 1 DESC LIMIT 1", "Eve");
+    /* Position 2 of "SELECT *, city" is the star's second expanded column;
+       on plain SELECT * it is the second result column (standard). */
+    test_query_value("SELECT *, city FROM 'query/data/students.csv' ORDER BY 2 LIMIT 1", "Charlie");
+    test_query_value("SELECT * FROM 'query/data/students.csv' ORDER BY 2 LIMIT 1", "Charlie");
+    test_query_value("SELECT * FROM 'query/data/students.csv' ORDER BY 3 DESC LIMIT 1", "Alice");
+    /* Out-of-range ordinals error once the result width is known. */
+    test_query_error("SELECT * FROM 'query/data/students.csv' ORDER BY 4", "not in the select list");
+}
+
 /* RANDOM() must be volatile: one value per row (never constant-folded to a
    single statement value), and each process launch must see a fresh random
    sequence (the old code used unseeded rand(), so every run started at
@@ -1224,6 +1280,7 @@ int main(void) {
     test_search_in();
     test_search_between();
     test_search_like();
+    test_like_escape();
     test_search_and_or();
     test_null_3vl();
     test_order_by_references();
@@ -1240,6 +1297,8 @@ int main(void) {
     test_too_deep_expression();
     test_typing_uniformity();
     test_concat_operator();
+    test_star_aggregates();
+    test_order_by_star_ordinal();
     test_random_function();
     test_repl_splitter();
     test_parse_oom();

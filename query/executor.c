@@ -253,6 +253,27 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
     err = build_output_cols(stmt, headers, header_count, arena, &out_cols, &out_count);
     if (err) { result.error = err; goto cleanup; }
 
+    /* Resolve ORDER BY positional references that could not be bound at
+       parse time (a '*' select item, or an ordinal beyond the select list):
+       the star is expanded by now, so the ordinal addresses a result column
+       (ORDER BY 1 on SELECT * sorts by the first column). Out-of-range
+       positions error here, where the result width is known. */
+    for (int j = 0; j < stmt->order_by_count; j++) {
+        ExprNode *e = stmt->order_by[j].expr;
+        if (e != NULL && e->type == EXPR_ORDER_ORDINAL) {
+            int pos = (int)e->num_value;
+            if (pos < 1 || pos > out_count) {
+                char buf[96];
+                snprintf(buf, sizeof(buf),
+                         "SELECT position %d is not in the select list.", pos);
+                char *msg = qarena_strdup(arena, buf);
+                result.error = msg ? msg : "Out of memory.";
+                goto cleanup;
+            }
+            stmt->order_by[j].expr = out_cols[pos - 1].expr;
+        }
+    }
+
     /* 3.5 Aggregate / GROUP BY detection */
     // TODO: Do all of these have to run if one has already found an aggregate?
     bool has_agg = false;
@@ -298,6 +319,14 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
         /* Validate DISTINCT usage */
         for (int i = 0; i < spec_count; i++) {
             ExprNode *n = specs[i].node;
+            /* Only COUNT may take '*'; SUM(*)/AVG(*)/MIN(*)/MAX(*) would
+               otherwise silently evaluate '*' as text and yield NULL or
+               the literal '*'. */
+            if (n->arg_count > 0 && n->args[0]->type == EXPR_STAR &&
+                !str_ieq(n->str_value, "COUNT")) {
+                result.error = "'*' is only allowed with COUNT.";
+                goto cleanup;
+            }
             if (!n->distinct) continue;
             if (n->arg_count != 1) {
                 result.error = "DISTINCT takes exactly one argument.";

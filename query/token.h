@@ -15,6 +15,7 @@ typedef enum {
     TOKEN_BETWEEN,
     TOKEN_LIKE,
     TOKEN_ILIKE,
+    TOKEN_ESCAPE,
     TOKEN_IS,
     TOKEN_DISTINCT,
     TOKEN_AS,

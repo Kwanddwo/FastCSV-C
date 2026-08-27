@@ -318,16 +318,23 @@ static ExprNode* resolve_select_ref(Parser *parser, SelectStmt *stmt, ExprNode *
         double v = node->num_value;
         if (v >= -1e9 && v <= 1e9 && v == (double)(int)v) {
             int pos = (int)v;
-            if (pos < 1 || pos > stmt->item_count) {
-                char buf[64];
-                snprintf(buf, sizeof(buf), "SELECT position %d is not in the select list.", pos);
-                record_error(parser, buf, parser->previous.line, parser->previous.column);
-            } else if (stmt->items[pos - 1].expr != NULL &&
-                       stmt->items[pos - 1].expr->type != EXPR_STAR) {
+            if (pos >= 1 && pos <= stmt->item_count &&
+                stmt->items[pos - 1].expr != NULL &&
+                stmt->items[pos - 1].expr->type != EXPR_STAR) {
                 return stmt->items[pos - 1].expr;
             }
-            /* A valid position holding '*' is left as a constant key: the
-               star-expanded output columns are only known after expansion. */
+            /* Otherwise the ordinal addresses the *expanded* result columns
+               (a '*' select item, or a position beyond the select list),
+               which are only known after star expansion: emit a marker the
+               executor resolves against the output columns, erroring there
+               when out of range. This keeps `SELECT * ... ORDER BY 2`
+               sorting by the second column per the standard. */
+            ExprNode *marker = alloc_expr_node(parser);
+            if (marker != NULL) {
+                marker->type = EXPR_ORDER_ORDINAL;
+                marker->num_value = (double)pos;
+            }
+            return marker;
         }
     } else if (node->type == EXPR_COLUMN_REF && node->str_value != NULL) {
         for (int i = 0; i < stmt->item_count; i++) {
