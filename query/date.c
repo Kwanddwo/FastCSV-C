@@ -2,6 +2,7 @@
  * (CURRENT_DATE, ...), EXTRACT and the documented date extensions
  * (NOW, YEAR(), MONTH(), DAY(), DATEDIFF, EXTRACT(QUARTER)). Dates are
  * plain 'YYYY-MM-DD[ HH:MM:SS]' strings with no separate date type. */
+#define _POSIX_C_SOURCE 200809L
 #include "date.h"
 #include "str_util.h"
 #include <stdio.h>
@@ -77,7 +78,8 @@ bool is_valid_extract_field(const char *f) {
 
 EvalResult eval_datetime_value(int kind, QArena *arena) {
     time_t t = time(NULL);
-    struct tm *lt = localtime(&t);
+    struct tm lt_buf;
+    struct tm *lt = localtime_r(&t, &lt_buf);
     char buf[32];
     if (lt == NULL) return eval_result_null();
     switch (kind) {

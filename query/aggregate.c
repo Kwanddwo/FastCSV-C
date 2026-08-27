@@ -132,10 +132,12 @@ static void agg_best_set(AggState *st, const EvalResult *v, QArena *arena) {
     }
 }
 
-/* Accumulate one record into the state. Returns an error string on failure. */
-const char* aggregate_row(ExprNode *arg, const char *name, bool distinct,
+/* Accumulate one record into the state. Returns an error string on failure.
+   kind is resolved once at spec collection, so the per-row path switches
+   instead of comparing names. */
+const char* aggregate_row(ExprNode *arg, AggKind kind, bool distinct,
                                  AggState *st, EvalCtx *ctx) {
-    if (str_ieq(name, "COUNT")) {
+    if (kind == AGG_COUNT) {
         if (arg == NULL || arg->type == EXPR_STAR) {
             st->count++;
             st->has_value = true;
@@ -160,7 +162,7 @@ const char* aggregate_row(ExprNode *arg, const char *name, bool distinct,
     if (eval_result_is_error(&v)) return v.error;
     if (v.is_null) return NULL;
 
-    if (str_ieq(name, "SUM") || str_ieq(name, "AVG")) {
+    if (kind == AGG_SUM || kind == AGG_AVG) {
         if (!v.is_numeric) return NULL;
         if (distinct) {
             bool is_new = false;
@@ -181,19 +183,18 @@ const char* aggregate_row(ExprNode *arg, const char *name, bool distinct,
         return NULL;
     }
     int cmp = eval_result_compare(&v, &st->best);
-    if ((str_ieq(name, "MIN") && cmp < 0) ||
-        (str_ieq(name, "MAX") && cmp > 0)) {
+    if ((kind == AGG_MIN && cmp < 0) || (kind == AGG_MAX && cmp > 0)) {
         agg_best_set(st, &v, ctx->arena);
     }
     return NULL;
 }
 
 /* Compute the finalized value of an accumulator. */
-EvalResult agg_state_value(const AggState *st, const char *name) {
-    if (str_ieq(name, "COUNT")) return eval_result_num((double)st->count);
+EvalResult agg_state_value(const AggState *st, AggKind kind) {
+    if (kind == AGG_COUNT) return eval_result_num((double)st->count);
     if (!st->has_value) return eval_result_null();
-    if (str_ieq(name, "SUM")) return eval_result_num(st->sum);
-    if (str_ieq(name, "AVG")) return eval_result_num(st->sum / (double)st->count);
+    if (kind == AGG_SUM) return eval_result_num(st->sum);
+    if (kind == AGG_AVG) return eval_result_num(st->sum / (double)st->count);
     return st->best;   /* MIN / MAX; str_val is arena-owned */
 }
 
@@ -349,12 +350,30 @@ const char* finalize_groups(QueryResult *result, AggGroup **groups, int group_co
         AggGroup *g = groups[gi];
         qarena_reset(tmp);
 
+        /* One classification memo for the representative row, shared by the
+           HAVING, projection and ORDER BY evaluations. */
+        CellMemo memo;
+        memo.cap = (int)g->rep.field_count;
+        memo.valid = NULL;
+        memo.vals = NULL;
+        if (g->rep.field_count > 0) {
+            void *mem;
+            QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * g->rep.field_count,
+                                           &mem);
+            if (ar != QARENA_OK) return "Out of memory.";
+            memo.vals = (EvalResult*)mem;
+            ar = qarena_alloc(tmp, g->rep.field_count, &mem);
+            if (ar != QARENA_OK) return "Out of memory.";
+            memset(mem, 0, g->rep.field_count);
+            memo.valid = (uint8_t*)mem;
+        }
+
         AggContext agg_ctx;
         agg_ctx.specs = specs;
         agg_ctx.spec_count = spec_count;
         agg_ctx.states = g->states;
 
-        EvalCtx ctx = eval_ctx_for(&g->rep, headers, header_count, arena, tmp, &agg_ctx);
+        EvalCtx ctx = eval_ctx_for(&g->rep, headers, header_count, arena, tmp, &memo, &agg_ctx);
 
         /* HAVING filter */
         if (stmt->having) {

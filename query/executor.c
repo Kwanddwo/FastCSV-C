@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 
 /* Initial capacities for growable arrays (doubled on demand). */
 static const int GROW_INITIAL_CAPACITY = 64;   /* result records / sort keys */
@@ -92,6 +93,11 @@ const char* project_row(const OutputCol *out_cols, int out_count,
 /* Append a projected record to the result, growing as needed. */
 const char* append_result(CSVRecord ***records, int *record_count, int *capacity,
                                  CSVRecord *proj, QArena *arena) {
+    /* Counts are ints throughout the engine: refuse to wrap instead of
+       silently corrupting the result. */
+    if (*record_count == INT_MAX) {
+        return "Result exceeds INT_MAX rows.";
+    }
     const char *err = grow_array(arena, (void**)records, capacity, *record_count + 1,
                                  sizeof(CSVRecord*));
     if (err) return err;
@@ -417,9 +423,29 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
     while ((record = csv_reader_next_record(reader)) != NULL) {
         qarena_reset(tmp);
 
+        /* Per-row cell classification cache: every column reference in
+           WHERE, sort keys, grouping and projection reuses the first
+           strtod of the row instead of re-parsing per reference. */
+        CellMemo memo;
+        memo.cap = (int)record->field_count;
+        memo.valid = NULL;
+        memo.vals = NULL;
+        if (record->field_count > 0) {
+            void *mem;
+            QArenaResult ar = qarena_alloc(tmp,
+                                           sizeof(EvalResult) * record->field_count,
+                                           &mem);
+            if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
+            memo.vals = (EvalResult*)mem;
+            ar = qarena_alloc(tmp, record->field_count, &mem);
+            if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
+            memset(mem, 0, record->field_count);
+            memo.valid = (uint8_t*)mem;
+        }
+
         /* Evaluate WHERE */
         if (stmt->where) {
-            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
+            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
             EvalResult where_val = eval_expr(stmt->where, &ctx);
             if (eval_result_is_error(&where_val)) {
                 result.error = where_val.error;
@@ -438,7 +464,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
                 if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
                 keys = (EvalResult*)keys_mem;
                 for (int j = 0; j < group_by_k; j++) {
-                    EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
+                    EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
                     EvalResult er = eval_expr(stmt->group_by[j], &ctx);
                     if (eval_result_is_error(&er)) {
                         result.error = er.error;
@@ -467,6 +493,10 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
                             g->keys[j].str_val = qarena_strdup(arena, keys[j].str_val);
                     }
                 }
+                if (group_count == INT_MAX) {
+                    result.error = "Result exceeds INT_MAX groups.";
+                    goto cleanup;
+                }
                 groups[group_count] = g;
                 err = group_table_insert(arena, &gtab, groups, group_count,
                                          group_count + 1, group_by_k);
@@ -476,10 +506,10 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
             if (g->rep.field_count == 0) g->rep = copy_record(record, arena);
 
             for (int i = 0; i < spec_count; i++) {
-                EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
+                EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
                 const char *aerr = aggregate_row(
                     specs[i].node->arg_count > 0 ? specs[i].node->args[0] : NULL,
-                    specs[i].name, specs[i].distinct, &g->states[i], &ctx);
+                    specs[i].kind, specs[i].distinct, &g->states[i], &ctx);
                 if (aerr) { result.error = aerr; goto cleanup; }
             }
             continue;
@@ -489,7 +519,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
            rows, and project a row only when it survives. Non-kept rows cost
            only the key evaluation. */
         if (topk_path) {
-            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
+            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
             EvalResult *keys;
             QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * (size_t)k,
                                          (void**)&keys);
@@ -513,7 +543,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
 
         /* Pre-compute ORDER BY keys on the original record */
         if (k > 0) {
-            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
+            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
             err = eval_sort_keys(&ctx, stmt->order_by, k, &sort_keys, &sort_keys_cap,
                                  result.record_count);
             if (err) { result.error = err; goto cleanup; }
@@ -521,7 +551,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
 
         /* Allocate and append projected record */
         CSVRecord *proj = NULL;
-        EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, NULL);
+        EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
         err = project_row(out_cols, out_count, &ctx, &proj);
         if (err) { result.error = err; goto cleanup; }
 

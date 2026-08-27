@@ -8,8 +8,8 @@
 
 /* Compare two entries' ORDER BY keys. Negative means a sorts before b.
    Mirrors the ORDER BY clause: per-key eval_result_compare, flipped for DESC.
-   Used both by the qsort path and the top-k heap so their ordering semantics
-   (NULLs, type-aware compare, multi-key) are identical. */
+   Used both by the merge-sort path and the top-k heap so their ordering
+   semantics (NULLs, type-aware compare, multi-key) are identical. */
 int cmp_keys(const EvalResult *a, const EvalResult *b, int k,
                     const OrderByItem *order_by) {
     for (int j = 0; j < k; j++) {
@@ -33,26 +33,46 @@ int cmp_keys(const EvalResult *a, const EvalResult *b, int k,
     return 0;
 }
 
-/* Module-static context for the qsort comparator (qsort has no closure). */
-static const EvalResult *sort_ctx_keys;
-static int sort_ctx_k;
-static const OrderByItem *sort_ctx_order_by;
+/* Comparator over index values with the arrival-order tie-break (the index
+   array starts as 0..n-1, i.e. scan order), so equal keys keep their input
+   order: deterministic and identical to the top-k path's tie handling. */
+static int cmp_idx(const EvalResult *keys, int k, const OrderByItem *ob,
+                   int a, int b) {
+    int c = cmp_keys(&keys[a * k], &keys[b * k], k, ob);
+    if (c != 0) return c;
+    return a - b;
+}
 
-static int compare_indices(const void *pa, const void *pb) {
-    int a = *(const int*)pa;
-    int b = *(const int*)pb;
-    return cmp_keys(&sort_ctx_keys[a * sort_ctx_k], &sort_ctx_keys[b * sort_ctx_k],
-                    sort_ctx_k, sort_ctx_order_by);
+/* Stable bottom-up-ish mergesort over the index array with an explicit
+   scratch buffer: no module statics (the qsort comparator closure problem),
+   deterministic, and stability is by construction rather than a
+   tie-break hack. */
+static void msort_merge(int *a, int a_len, int *b, int b_len, int *out,
+                        const EvalResult *keys, int k, const OrderByItem *ob) {
+    int i = 0, j = 0, o = 0;
+    while (i < a_len && j < b_len) {
+        if (cmp_idx(keys, k, ob, a[i], b[j]) <= 0) out[o++] = a[i++];
+        else out[o++] = b[j++];
+    }
+    while (i < a_len) out[o++] = a[i++];
+    while (j < b_len) out[o++] = b[j++];
+}
+
+static void msort_rec(int *a, int *tmp, int n,
+                      const EvalResult *keys, int k, const OrderByItem *ob) {
+    if (n <= 1) return;
+    int m = n / 2;
+    msort_rec(a, tmp, m, keys, k, ob);
+    msort_rec(a + m, tmp + m, n - m, keys, k, ob);
+    msort_merge(a, m, a + m, n - m, tmp, keys, k, ob);
+    for (int i = 0; i < n; i++) a[i] = tmp[i];
 }
 
 static void sort_indices(int *order, int n,
-                          const EvalResult *keys, int k,
-                          const OrderByItem *ob) {
+                         const EvalResult *keys, int k,
+                         const OrderByItem *ob, int *scratch) {
     if (n <= 1) return;
-    sort_ctx_keys = keys;
-    sort_ctx_k = k;
-    sort_ctx_order_by = ob;
-    qsort(order, (size_t)n, sizeof(int), compare_indices);
+    msort_rec(order, scratch, n, keys, k, ob);
 }
 
 /* ===== Top-K heap (ORDER BY + LIMIT) ===== */
@@ -67,6 +87,7 @@ const char* topk_init(QArena *arena, TopK *tk, int cap, int key_count,
     tk->count = 0;
     tk->key_count = key_count;
     tk->order_by = order_by;
+    tk->next_ord = 0;
     void *mem;
     QArenaResult ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)cap, &mem);
     if (ar != QARENA_OK) return "Out of memory.";
@@ -77,7 +98,21 @@ const char* topk_init(QArena *arena, TopK *tk, int cap, int key_count,
     ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
     if (ar != QARENA_OK) return "Out of memory.";
     tk->heap = (int*)mem;
+    ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
+    tk->ord = (int*)mem;
     return NULL;
+}
+
+/* Entry comparator with the arrival-ordinal tie-break: earlier arrivals are
+   "better" when the ORDER BY keys tie, independent of sort direction. */
+static int cmp_entries(const TopK *tk, int a, int b) {
+    int c = cmp_keys(&tk->keys[a * tk->key_count], &tk->keys[b * tk->key_count],
+                     tk->key_count, tk->order_by);
+    if (c != 0) return c;
+    if (tk->ord[a] < tk->ord[b]) return -1;
+    if (tk->ord[a] > tk->ord[b]) return 1;
+    return 0;
 }
 
 /* Would a row with these keys enter the top-k? */
@@ -102,9 +137,7 @@ static void persist_keys(QArena *arena, EvalResult *keys, int key_count) {
 static void topk_sift_up(TopK *tk, int i) {
     while (i > 0) {
         int parent = (i - 1) / 2;
-        const EvalResult *pk = &tk->keys[tk->heap[parent] * tk->key_count];
-        const EvalResult *ik = &tk->keys[tk->heap[i] * tk->key_count];
-        if (cmp_keys(pk, ik, tk->key_count, tk->order_by) >= 0) break;
+        if (cmp_entries(tk, tk->heap[parent], tk->heap[i]) >= 0) break;
         int tmp = tk->heap[parent];
         tk->heap[parent] = tk->heap[i];
         tk->heap[i] = tmp;
@@ -120,14 +153,10 @@ static void topk_sift_down(TopK *tk) {
         int right = 2 * i + 2;
         if (left >= tk->count) break;
         int worst = left;
-        if (right < tk->count) {
-            const EvalResult *lk = &tk->keys[tk->heap[left] * tk->key_count];
-            const EvalResult *rk = &tk->keys[tk->heap[right] * tk->key_count];
-            if (cmp_keys(lk, rk, tk->key_count, tk->order_by) < 0) worst = right;
-        }
-        const EvalResult *ik = &tk->keys[tk->heap[i] * tk->key_count];
-        const EvalResult *wk = &tk->keys[tk->heap[worst] * tk->key_count];
-        if (cmp_keys(ik, wk, tk->key_count, tk->order_by) >= 0) break;
+        if (right < tk->count &&
+            cmp_entries(tk, tk->heap[left], tk->heap[right]) < 0)
+            worst = right;
+        if (cmp_entries(tk, tk->heap[i], tk->heap[worst]) >= 0) break;
         int tmp = tk->heap[i];
         tk->heap[i] = tk->heap[worst];
         tk->heap[worst] = tmp;
@@ -143,12 +172,14 @@ void topk_insert(QArena *arena, TopK *tk, CSVRecord *rec,
     if (tk->count < tk->cap) {
         idx = tk->count++;
         tk->heap[idx] = idx;
+        tk->ord[idx] = tk->next_ord++;
         memcpy(&tk->keys[idx * tk->key_count], keys,
                sizeof(EvalResult) * (size_t)tk->key_count);
         persist_keys(arena, &tk->keys[idx * tk->key_count], tk->key_count);
         topk_sift_up(tk, idx);
     } else {
         idx = tk->heap[0];   /* worst kept entry, being evicted */
+        tk->ord[idx] = tk->next_ord++;
         memcpy(&tk->keys[idx * tk->key_count], keys,
                sizeof(EvalResult) * (size_t)tk->key_count);
         persist_keys(arena, &tk->keys[idx * tk->key_count], tk->key_count);
@@ -208,7 +239,12 @@ const char* order_records(CSVRecord ***records, int record_count, int k,
     int *order = (int*)mem;
     for (int i = 0; i < record_count; i++) order[i] = i;
 
-    sort_indices(order, record_count, sort_keys, k, order_by);
+    /* Mergesort scratch (arena-owned). */
+    ar = qarena_alloc(arena, sizeof(int) * (size_t)record_count, &mem);
+    if (ar != QARENA_OK) return "Out of memory.";
+    int *scratch = (int*)mem;
+
+    sort_indices(order, record_count, sort_keys, k, order_by, scratch);
 
     ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)record_count, &mem);
     if (ar != QARENA_OK) return "Out of memory.";

@@ -164,6 +164,16 @@ no tuning, no environment variables.
   of both operands; a NULL operand makes the result NULL (`'x' || NULL` is
   NULL), unlike the lenient `CONCAT()` function which skips NULLs. It binds
   with the bitwise operators (below `+ -`).
+- **Deterministic**: ORDER BY ties are broken by arrival order (stable), so
+  a query returns the same rows whether the LIMIT window takes the top-k or
+  full-sort path. `LC_NUMERIC` is pinned to "C" at startup: CSV numbers
+  parse and print with `.` regardless of the environment's locale.
+- **Robustness**: expression depth is capped at 1000 (parser recursion and
+  the evaluator/walkers guard the stack; deep nesting fails cleanly with
+  `Expression is too large`), float-to-int conversions clamp instead of
+  invoking undefined behaviour, and result counts are guarded against
+  `INT_MAX` overflow. The engine is single-user: concurrent multi-threaded
+  `query_execute` calls are not supported (serialize externally).
 - **Functions**: scalar `UPPER/UCASE`, `LOWER/LCASE`, `LENGTH`/`CHAR_LENGTH`/
   `CHARACTER_LENGTH`, `TRIM`, `SUBSTR`/`SUBSTRING`, `CONCAT`, `COALESCE`/
   `IFNULL`, `POSITION(sub IN str)`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`,

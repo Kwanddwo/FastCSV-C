@@ -4,6 +4,7 @@
 #include "parser.h"
 #include "parser_internal.h"
 #include "scanner.h"
+#include "eval.h"
 #include "str_util.h"
 #include <string.h>
 #include <stdlib.h>
@@ -11,12 +12,6 @@
 #include <limits.h>
 
 #define MAX_PARSE_ERRORS 50
-
-/* Maximum expression tree depth (node count). Deep trees (e.g. a chain of
-   20000 additions) crash the recursive folding/evaluation walkers with a
-   stack overflow, so the limit is enforced at parse time, like SQLite's
-   "Expression tree is too large (max depth 1000)". */
-#define MAX_EXPR_DEPTH 1000
 
 /* ===== Init ===== */
 Parser parser_init(const char *source, QArena *arena, ParseErrorList *errors) {
@@ -32,6 +27,8 @@ Parser parser_init(const char *source, QArena *arena, ParseErrorList *errors) {
     parser.arena = arena;
     parser.source = source;
     parser.oom = false;
+    parser.too_deep = false;
+    parser.depth = 0;
     return parser;
 }
 
@@ -115,9 +112,9 @@ void parser_oom(Parser *parser, int line, int col) {
 
 /* ===== Token helpers ===== */
 void advance(Parser *parser) {
-    /* Fail-stop: after an OOM, freeze the token stream; match() returning
-       false unwinds every parse loop. */
-    if (parser->oom) return;
+    /* Fail-stop: after an OOM or too-deep abort, freeze the token stream;
+       match() returning false unwinds every parse loop. */
+    if (parser->oom || parser->too_deep) return;
 
     parser->previous = parser->current;
 
@@ -138,14 +135,14 @@ bool check(Parser *parser, TokenType type) {
 }
 
 bool match(Parser *parser, TokenType type) {
-    if (parser->oom) return false;
+    if (parser->oom || parser->too_deep) return false;
     if (!check(parser, type)) return false;
     advance(parser);
     return true;
 }
 
 void consume(Parser *parser, TokenType type, const char *message) {
-    if (parser->oom) return;
+    if (parser->oom || parser->too_deep) return;
 
     if (parser->current.type == type) {
         advance(parser);
@@ -268,6 +265,9 @@ ExprNode* alloc_expr_node(Parser *parser) {
     node->str_value = NULL;
     node->num_value = 0.0;
     node->col_index = -1;
+    node->func_index = -1;   /* unknown until parsed */
+    node->agg_kind = 0;      /* AGG_NONE */
+    node->text_numeric = false;
     node->left = NULL;
     node->right = NULL;
     node->mid = NULL;
@@ -616,21 +616,6 @@ SelectStmt* parse_select_query(Parser *parser) {
 /* Children of an expression node, accessed by index so the IN-list argument
    array (arbitrarily wide) never needs materialization; the depth search's
    explicit stack therefore stays O(tree depth). */
-static const ExprNode* node_child_at(const ExprNode *n, int i) {
-    if (n->left) { if (i == 0) return n->left; i--; }
-    if (n->right) { if (i == 0) return n->right; i--; }
-    if (n->mid) { if (i == 0) return n->mid; i--; }
-    if (i < n->arg_count) return n->args[i];
-    i -= n->arg_count;
-    for (const CaseWhen *cw = n->case_whens; cw; cw = cw->next) {
-        if (i == 0) return cw->condition;
-        if (i == 1) return cw->result;
-        i -= 2;
-    }
-    if (n->case_else) { if (i == 0) return n->case_else; }
-    return NULL;
-}
-
 typedef struct {
     const ExprNode *node;
     int child_idx;
@@ -647,7 +632,7 @@ static bool expr_depth_exceeded(const ExprNode *root) {
     stack[sp++] = (DepthResume){ root, 0 };
     while (sp > 0) {
         DepthResume *f = &stack[sp - 1];
-        const ExprNode *child = node_child_at(f->node, f->child_idx);
+        const ExprNode *child = expr_node_child_at(f->node, f->child_idx);
         if (child != NULL) {
             f->child_idx++;
             if (sp == MAX_EXPR_DEPTH) return true; /* pushing would exceed */
@@ -689,6 +674,12 @@ SelectStmt* parse_select(const char *source, QArena *arena, ParseErrorList *erro
        mutated by placeholder nodes and must never reach the executor. */
     if (parser.oom) {
         if (out_oom) *out_oom = true;
+        return NULL;
+    }
+
+    /* Expression nesting beyond MAX_EXPR_DEPTH: the error was already
+       recorded; return no statement so execution never runs. */
+    if (parser.too_deep) {
         return NULL;
     }
 

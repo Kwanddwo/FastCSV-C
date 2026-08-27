@@ -1,9 +1,17 @@
 #ifndef QUERY_H
 #define QUERY_H
 
+/* Thread-safety contract: the query engine is single-user. A statement
+   executes in per-process module state (parser arenas, evaluation memo,
+   sort scratch, PRNG state), so concurrent query_execute calls from
+   multiple threads are NOT supported — serialize them externally. This is
+   safe for the csvql CLI and single-threaded hosts.
+   Count limits: result rows, groups and headers are ints; exceeding
+   INT_MAX rows/groups fails cleanly ("Result exceeds INT_MAX rows."). */
+
 #include "../csv_reader.h"
 #include "../csv_config.h"
-#include "qarena.h"
+#include "../arena.h"
 #include "parser.h"
 
 typedef struct {

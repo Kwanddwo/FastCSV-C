@@ -5,6 +5,7 @@
 #include "parser_internal.h"
 #include "str_util.h"
 #include "date.h"
+#include "eval.h"
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -92,9 +93,18 @@ static ExprNode* parse_bitwise_expr(Parser *parser) {
     return expr;
 }
 
+/* Guard recursive-descent nesting (parens, unary, NOT, nested CASE): past
+   MAX_EXPR_DEPTH the parser would smash the C stack before any post-parse
+   depth check could run. */
+#define PARSE_ENTER(parser)     if ((parser)->oom || (parser)->too_deep) return NULL;     if (++(parser)->depth > MAX_EXPR_DEPTH) {         (parser)->depth--;         (parser)->too_deep = true;         record_error((parser), "Expression is too large (max depth 1000).",                      (parser)->current.line, (parser)->current.column);         return NULL;     }
+#define PARSE_EXIT(parser) ((parser)->depth--)
+
 /* expression ::= bitwise_expr */
 ExprNode* parse_expression(Parser *parser) {
-    return parse_bitwise_expr(parser);
+    PARSE_ENTER(parser)
+    ExprNode *e = parse_bitwise_expr(parser);
+    PARSE_EXIT(parser);
+    return e;
 }
 
 /* ===== Primary expression ===== */
@@ -136,6 +146,10 @@ static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
     if (node == NULL) return NULL;
     node->type = EXPR_FUNCTION_CALL;
     node->str_value = qarena_strdup(parser->arena, func_name);
+    /* Resolve dispatch once at parse time: the per-row hot path uses the
+       cached table index and aggregate kind instead of re-scanning. */
+    node->func_index = lookup_function_index(func_name);
+    node->agg_kind = aggregate_kind(func_name);
     node->distinct = match(parser, TOKEN_DISTINCT);
 
     if (match(parser, TOKEN_RPAREN)) {
@@ -166,13 +180,18 @@ static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
 }
 
 static ExprNode* parse_arithmetic_primary(Parser *parser) {
-    /* Unary plus / minus */
+    /* Unary plus / minus (self-recursion guarded against stack overflow:
+       deep unary chains must fail cleanly, not crash). */
     if (match(parser, TOKEN_PLUS)) {
+        PARSE_ENTER(parser)
         ExprNode *operand = parse_arithmetic_primary(parser);
+        PARSE_EXIT(parser);
         return make_unary(parser, EXPR_UNARY_PLUS, operand);
     }
     if (match(parser, TOKEN_MINUS)) {
+        PARSE_ENTER(parser)
         ExprNode *operand = parse_arithmetic_primary(parser);
+        PARSE_EXIT(parser);
         return make_unary(parser, EXPR_UNARY_MINUS, operand);
     }
 
@@ -225,6 +244,11 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
     if (match(parser, TOKEN_STRING)) {
         ExprNode *node = make_leaf(parser, EXPR_LITERAL_STRING);
         node->str_value = copy_string_literal(parser, parser->previous.lexeme, parser->previous.length);
+        /* Pre-classify: a literal that parses as a number is typed once
+           here (value in num_value, raw text kept in str_value) so the
+           per-row hot path never re-parses it. */
+        node->text_numeric = text_parses_numeric(node->str_value ? node->str_value : "",
+                                                  &node->num_value);
         return node;
     }
 
@@ -424,7 +448,10 @@ static ExprNode* parse_and_expr(Parser *parser) {
 /* parse_not_expr ::= NOT parse_not_expr | parse_primary_condition */
 static ExprNode* parse_not_expr(Parser *parser) {
     if (match(parser, TOKEN_NOT)) {
+        /* Self-recursion guarded: deep NOT chains must fail cleanly. */
+        PARSE_ENTER(parser)
         ExprNode *operand = parse_not_expr(parser);
+        PARSE_EXIT(parser);
         return make_unary(parser, EXPR_NOT, operand);
     }
 
@@ -570,7 +597,11 @@ static ExprNode* parse_primary_condition(Parser *parser) {
     return expr;
 }
 
-/* parse_search_condition ::= parse_or_expr */
+/* parse_search_condition ::= parse_or_expr (guarded; parens nest through
+   here, so deep parenthesization fails cleanly instead of overflowing). */
 ExprNode* parse_search_condition(Parser *parser) {
-    return parse_or_expr(parser);
+    PARSE_ENTER(parser)
+    ExprNode *e = parse_or_expr(parser);
+    PARSE_EXIT(parser);
+    return e;
 }

@@ -33,17 +33,35 @@ bool expr_walk(ExprNode *node, ExprVisitFn visit, void *ud) {
         default: break;
     }
 
-    if (!expr_walk(node->left, visit, ud)) return false;
-    if (!expr_walk(node->right, visit, ud)) return false;
-    if (!expr_walk(node->mid, visit, ud)) return false;
-    for (int i = 0; i < node->arg_count; i++) {
-        if (!expr_walk(node->args[i], visit, ud)) return false;
+    /* Iterative pre-order walk with an explicit resume stack, so walkers
+       can never overflow the C stack. The stack is bounded by
+       MAX_EXPR_DEPTH (+1 slack): parse-time caps mean it never fills;
+       a deeper hand-built tree aborts the walk instead of recursing. */
+    typedef struct {
+        const ExprNode *node;
+        int child;   /* next child index to visit */
+    } WalkFrame;
+    WalkFrame stack[MAX_EXPR_DEPTH + 2];
+    int sp = 0;
+    stack[sp++] = (WalkFrame){ node, 0 };
+
+    while (sp > 0) {
+        WalkFrame *f = &stack[sp - 1];
+        const ExprNode *child = expr_node_child_at(f->node, f->child);
+        if (child == NULL) {
+            sp--;
+            continue;
+        }
+        f->child++;
+        switch (visit((ExprNode*)child, ud)) {
+            case EXPR_VISIT_ABORT: return false;
+            case EXPR_VISIT_PRUNE: break;
+            default:
+                if (sp >= MAX_EXPR_DEPTH + 1) return false;
+                stack[sp++] = (WalkFrame){ child, 0 };
+        }
     }
-    for (CaseWhen *cw = node->case_whens; cw; cw = cw->next) {
-        if (!expr_walk(cw->condition, visit, ud)) return false;
-        if (!expr_walk(cw->result, visit, ud)) return false;
-    }
-    return expr_walk(node->case_else, visit, ud);
+    return true;
 }
 
 static bool name_in_list(const char *name, char **names, int count) {
@@ -172,6 +190,7 @@ static ExprVisit collect_specs_visit(ExprNode *node, void *ud) {
         AggSpec *s = &(*u->specs)[(*u->count)++];
         s->node = node;
         s->name = node->str_value;
+        s->kind = aggregate_kind(node->str_value);
         s->distinct = node->distinct;
         /* Aggregate arguments may not themselves contain aggregates */
         return EXPR_VISIT_PRUNE;

@@ -12,6 +12,7 @@
 #include "query/str_util.h"
 #include "scanner.h"
 #include "deps/linenoise.h"
+#include <locale.h>
 
 #define CFG_ARENA_SIZE (2 * 1024)
 #define CSVQL_VERSION "1.0"
@@ -128,7 +129,13 @@ static void print_result(QueryResult *result, const char *source) {
         return;
     }
 
-    int widths[result->header_count];
+    /* Heap-allocated: the header count is user data (a wide CSV or a big
+       star expansion) and must not become a stack allocation. */
+    int *widths = malloc(sizeof(int) * (size_t)result->header_count);
+    if (widths == NULL) {
+        fprintf(stderr, "%sError:%s Out of memory.\n", red, rst);
+        return;
+    }
     for (int i = 0; i < result->header_count; i++) {
         widths[i] = (int)strlen(result->headers[i]);
     }
@@ -161,6 +168,7 @@ static void print_result(QueryResult *result, const char *source) {
         printf("\n");
     }
     print_separator(widths, result->header_count);
+    free(widths);
 
     if (use_color) {
         printf("%s%d row(s) in set.%s\n", C_DIM, result->record_count, C_RESET);
@@ -551,6 +559,11 @@ static bool has_significant_code(const char *s) {
 /* ===== Entry point ===== */
 int main(int argc, char **argv) {
     Arena cfg_arena;
+
+    /* Numbers parse and print with '.' regardless of the user's environment:
+       under a comma-decimal locale, strtod and %.15g would silently read
+       '1.5' cells as text and print 1,5. */
+    setlocale(LC_NUMERIC, "C");
 
     if (arena_create(&cfg_arena, CFG_ARENA_SIZE) != ARENA_OK) {
         fprintf(stderr, "Failed to create config arena.\n");

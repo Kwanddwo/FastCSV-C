@@ -28,12 +28,22 @@ static ExprNode* alloc_literal_node(QArena *arena, const EvalResult *v) {
 
     if (v->is_null) {
         node->type = EXPR_LITERAL_NULL;
+    } else if (v->is_numeric && v->str_val != NULL) {
+        /* A typed text value (e.g. UPPER('007')) keeps its raw text for
+           display and string functions, with the classification cached. */
+        node->type = EXPR_LITERAL_STRING;
+        node->num_value = v->num_val;
+        node->str_value = qarena_strdup(arena, v->str_val);
+        node->text_numeric = true;
     } else if (v->is_numeric) {
         node->type = EXPR_LITERAL_NUMBER;
         node->num_value = v->num_val;
     } else {
         node->type = EXPR_LITERAL_STRING;
         node->str_value = qarena_strdup(arena, v->str_val ? v->str_val : "");
+        /* Folded string literals keep the same parse-time classification. */
+        node->text_numeric = text_parses_numeric(node->str_value ? node->str_value : "",
+                                                 &node->num_value);
     }
     return node;
 }
@@ -66,7 +76,7 @@ static ExprNode* fold_node(ExprNode *node, QArena *arena) {
     /* Evaluate once. A NULL record is safe: constant subtrees contain no
        column refs. A failing evaluation stays unfolded to keep the per-row
        error behavior (message and timing) unchanged. */
-    EvalCtx ctx = eval_ctx_for(NULL, NULL, 0, arena, arena, NULL);
+    EvalCtx ctx = eval_ctx_for(NULL, NULL, 0, arena, arena, NULL, NULL);
     EvalResult v = eval_expr(node, &ctx);
     if (eval_result_is_error(&v)) return node;
 

@@ -16,11 +16,15 @@ int cmp_keys(const EvalResult *a, const EvalResult *b, int k,
              const OrderByItem *order_by);
 
 /* Bounded top-k heap for ORDER BY + LIMIT. Holds at most `cap` projected
-   records with their sort keys; the heap root is the worst kept row. */
+   records with their sort keys; the heap root is the worst kept row. Each
+   entry carries its arrival ordinal so full ties (equal keys) break by
+   arrival order, matching the stable full-sort path. */
 typedef struct {
     CSVRecord **recs;   /* entry records, size cap */
     EvalResult *keys;   /* entry keys, size cap * key_count */
     int *heap;          /* positional heap over entry indices */
+    int *ord;           /* per-entry arrival ordinal (tie-break) */
+    int next_ord;       /* arrival counter for the next insert */
     int cap;            /* == the window size */
     int count;          /* entries stored so far */
     int key_count;

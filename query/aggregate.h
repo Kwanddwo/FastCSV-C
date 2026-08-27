@@ -15,6 +15,7 @@
 struct AggSpec {
     ExprNode *node;        /* the EXPR_FUNCTION_CALL node */
     const char *name;      /* COUNT / SUM / AVG / MIN / MAX */
+    AggKind kind;          /* resolved once at spec collection */
     bool distinct;
 };
 
@@ -67,9 +68,9 @@ int group_table_find(const GroupTable *t, AggGroup **groups,
 AggGroup* agg_group_create(int k, int spec_count, QArena *arena);
 
 /* ===== Aggregate accumulation ===== */
-const char* aggregate_row(ExprNode *arg, const char *name, bool distinct,
+const char* aggregate_row(ExprNode *arg, AggKind kind, bool distinct,
                           AggState *st, EvalCtx *ctx);
-EvalResult agg_state_value(const AggState *st, const char *name);
+EvalResult agg_state_value(const AggState *st, AggKind kind);
 
 /* Find the spec index for a given aggregate call node, or -1. */
 int find_spec(const AggSpec *specs, int spec_count, ExprNode *node);

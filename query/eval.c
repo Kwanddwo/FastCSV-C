@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <limits.h>
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
@@ -85,16 +86,42 @@ bool eval_result_is_true(const EvalResult *r) {
     return r->str_val != NULL && r->str_val[0] != '\0';
 }
 
+/* True when s fully parses as a number; *out receives the value. Shared by
+   classify_text, the parser (string-literal pre-classification) and fold. */
+bool text_parses_numeric(const char *s, double *out) {
+    char *end;
+    double v = strtod(s, &end);
+    if (*end == '\0' && end != s) {
+        if (out) *out = v;
+        return true;
+    }
+    return false;
+}
+
 /* Classify a text value exactly once, regardless of whether it came from a
    CSV cell or a SQL literal: text that fully parses as a number IS a
    number (the engine's single typing rule), carrying its raw text so
    display and string functions see the original spelling. Anything else is
    a string. */
 static EvalResult classify_text(const char *s) {
-    char *end;
-    double v = strtod(s, &end);
-    if (*end == '\0' && end != s) return eval_result_num_text(v, s);
+    double v;
+    if (text_parses_numeric(s, &v)) return eval_result_num_text(v, s);
     return eval_result_str(s);
+}
+
+/* Classify CSV cell `idx` for the current row, memoizing the result in the
+   per-row cache so a column referenced in WHERE, sort keys and projection
+   is parsed once instead of once per reference. */
+static EvalResult cell_classify(EvalCtx *ctx, int idx) {
+    const char *field = ctx->record->fields[idx];
+    if (ctx->memo && idx < ctx->memo->cap && ctx->memo->valid[idx])
+        return ctx->memo->vals[idx];
+    EvalResult r = classify_text(field);
+    if (ctx->memo && idx < ctx->memo->cap) {
+        ctx->memo->vals[idx] = r;
+        ctx->memo->valid[idx] = 1;
+    }
+    return r;
 }
 
 /* A string is numeric-like if it fully parses as a number, using the same
@@ -258,6 +285,16 @@ bool like_match(const char *s, const char *p, char esc, bool case_insensitive) {
 }
 
 /* ===== Argument evaluation helpers ===== */
+/* Safely convert a double to an int within [lo, hi]: NaN -> lo, and values
+   outside the int range clamp instead of invoking the undefined-behaviour
+   float->int cast (which the bitwise path also guards against). */
+static int clamp_to_int(double v, int lo, int hi) {
+    if (v != v) return lo;              /* NaN */
+    if (v >= (double)hi) return hi;
+    if (v <= (double)lo) return lo;
+    return (int)v;
+}
+
 /* Evaluate args[i] as a display string. On error or NULL returns false and
    sets *out to the result the caller should return unchanged. */
 static bool eval_str_arg(EvalCtx *ctx, ExprNode **args, int arg_count, int i,
@@ -289,6 +326,15 @@ bool is_aggregate_name(const char *name) {
            str_ieq(name, "MAX");
 }
 
+AggKind aggregate_kind(const char *name) {
+    if (str_ieq(name, "COUNT")) return AGG_COUNT;
+    if (str_ieq(name, "SUM"))   return AGG_SUM;
+    if (str_ieq(name, "AVG"))   return AGG_AVG;
+    if (str_ieq(name, "MIN"))   return AGG_MIN;
+    if (str_ieq(name, "MAX"))   return AGG_MAX;
+    return AGG_NONE;
+}
+
 typedef EvalResult (*FuncImpl)(EvalCtx *ctx, ExprNode **args, int arg_count);
 
 typedef struct {
@@ -304,7 +350,7 @@ static EvalResult fn_upper(EvalCtx *ctx, ExprNode **args, int arg_count) {
     char *res = qarena_strdup(ctx->tmp, s);
     if (!res) return eval_result_null();
     for (size_t i = 0; i < len; i++) res[i] = (char)toupper((unsigned char)res[i]);
-    return eval_result_str(res);
+    return classify_text(res);
 }
 
 static EvalResult fn_lower(EvalCtx *ctx, ExprNode **args, int arg_count) {
@@ -315,7 +361,7 @@ static EvalResult fn_lower(EvalCtx *ctx, ExprNode **args, int arg_count) {
     char *res = qarena_strdup(ctx->tmp, s);
     if (!res) return eval_result_null();
     for (size_t i = 0; i < len; i++) res[i] = (char)tolower((unsigned char)res[i]);
-    return eval_result_str(res);
+    return classify_text(res);
 }
 
 static EvalResult fn_length(EvalCtx *ctx, ExprNode **args, int arg_count) {
@@ -340,7 +386,7 @@ static EvalResult fn_trim(EvalCtx *ctx, ExprNode **args, int arg_count) {
     if (ar != QARENA_OK) return eval_result_null();
     memcpy(res, s, new_len);
     res[new_len] = '\0';
-    return eval_result_str(res);
+    return classify_text(res);
 }
 
 static EvalResult fn_substr(EvalCtx *ctx, ExprNode **args, int arg_count) {
@@ -351,12 +397,12 @@ static EvalResult fn_substr(EvalCtx *ctx, ExprNode **args, int arg_count) {
     EvalResult pv = eval_expr(args[1], ctx);
     if (eval_result_is_error(&pv)) return pv;
     if (pv.is_null || !pv.is_numeric) return eval_result_null();
-    int start = (int)pv.num_val;
+    int start = clamp_to_int(pv.num_val, INT_MIN, INT_MAX);
     int length = -1;
     if (arg_count >= 3) {
         EvalResult lv = eval_expr(args[2], ctx);
         if (eval_result_is_error(&lv)) return lv;
-        if (!lv.is_null && lv.is_numeric) length = (int)lv.num_val;
+        if (!lv.is_null && lv.is_numeric) length = clamp_to_int(lv.num_val, INT_MIN, INT_MAX);
     }
     size_t slen = strlen(s);
     if (start < 1) start = 1;
@@ -369,7 +415,7 @@ static EvalResult fn_substr(EvalCtx *ctx, ExprNode **args, int arg_count) {
     if (ar != QARENA_OK) return eval_result_null();
     memcpy(res, s + offset, remaining);
     res[remaining] = '\0';
-    return eval_result_str(res);
+    return classify_text(res);
 }
 
 static EvalResult fn_concat(EvalCtx *ctx, ExprNode **args, int arg_count) {
@@ -398,7 +444,7 @@ static EvalResult fn_concat(EvalCtx *ctx, ExprNode **args, int arg_count) {
         pos += len;
     }
     res[pos] = '\0';
-    return eval_result_str(res);
+    return classify_text(res);
 }
 
 static EvalResult fn_coalesce(EvalCtx *ctx, ExprNode **args, int arg_count) {
@@ -425,7 +471,9 @@ static EvalResult fn_round(EvalCtx *ctx, ExprNode **args, int arg_count) {
     if (arg_count >= 2) {
         EvalResult d = eval_expr(args[1], ctx);
         if (eval_result_is_error(&d)) return d;
-        if (!d.is_null && d.is_numeric) decimals = (int)d.num_val;
+        /* Rounding beyond ~15-17 significant digits is a no-op for doubles;
+           clamp to prevent pow() overflow (NaN) from huge exponents. */
+        if (!d.is_null && d.is_numeric) decimals = clamp_to_int(d.num_val, -30, 30);
     }
     double mult = pow(10.0, decimals);
     return eval_result_num(round(v * mult) / mult);
@@ -492,8 +540,9 @@ static EvalResult fn_random(EvalCtx *ctx, ExprNode **args, int arg_count) {
 
     /* Private splitmix64 PRNG, lazily seeded from time/pid/ASLR so each
        process launch produces a different sequence and callers never depend
-       on glibc's global rand() state. */
-    static uint64_t state = 0;
+       on glibc's global rand() state. Thread-local so concurrent evaluation
+       contexts cannot interleave the stream. */
+    static __thread uint64_t state = 0;
     if (state == 0) {
         uint64_t addr = (uintptr_t)&state;
         state = (uint64_t)time(NULL) ^ (uint64_t)clock()
@@ -612,6 +661,16 @@ static const FuncDef funcs[] = {
     { "DAY", fn_day },
     { "DATEDIFF", fn_datediff },
 };
+
+/* Resolve a scalar function name to its table index once (case-insensitive);
+   -1 when unknown. The result is cached on the AST node at parse time, so
+   the per-row hot path dispatches directly. */
+int lookup_function_index(const char *name) {
+    for (size_t i = 0; i < sizeof(funcs) / sizeof(funcs[0]); i++) {
+        if (str_ieq(name, funcs[i].name)) return (int)i;
+    }
+    return -1;
+}
 
 static EvalResult eval_function(const char *name, ExprNode **args, int arg_count,
                                 EvalCtx *ctx) {
@@ -858,22 +917,32 @@ static EvalResult eval_case(ExprNode *node, EvalCtx *ctx) {
 }
 
 static EvalResult eval_call(ExprNode *node, EvalCtx *ctx) {
-    if (node->distinct && !is_aggregate_name(node->str_value)) {
+    if (node->distinct && node->agg_kind == AGG_NONE) {
         return eval_result_error("DISTINCT is only allowed with aggregate functions.");
     }
     /* During grouped finalization, resolve aggregate calls from the
        precomputed per-group state instead of evaluating them. */
-    if (ctx->agg && is_aggregate_name(node->str_value)) {
+    if (ctx->agg && node->agg_kind != AGG_NONE) {
         int idx = find_spec(ctx->agg->specs, ctx->agg->spec_count, node);
         if (idx >= 0) {
-            return agg_state_value(&ctx->agg->states[idx], node->str_value);
+            return agg_state_value(&ctx->agg->states[idx], node->agg_kind);
         }
+    }
+    /* Scalar dispatch is resolved once at parse time (func_index cached on
+       the node); unknown functions fall back to the scan-and-error path. */
+    if (node->func_index >= 0) {
+        return funcs[node->func_index].impl(ctx, node->args, node->arg_count);
     }
     return eval_function(node->str_value, node->args, node->arg_count, ctx);
 }
 
 /* ===== Expression evaluation ===== */
-EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
+/* The recursive expression evaluator. Every internal recursion funnels
+   through eval_expr, so the depth guard here makes stack overflow
+   impossible for any tree that reaches execution — even one that bypassed
+   the parse-time checks (parse caps trees at MAX_EXPR_DEPTH, so this is
+   defense-in-depth, not the primary bound). */
+static EvalResult eval_expr_impl(ExprNode *node, EvalCtx *ctx) {
     if (node == NULL) return eval_result_null();
 
     switch (node->type) {
@@ -882,7 +951,11 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
             return eval_result_num(node->num_value);
 
         case EXPR_LITERAL_STRING:
-            return classify_text(node->str_value ? node->str_value : "");
+            /* Classification is cached on the node at parse time. */
+            if (node->text_numeric)
+                return eval_result_num_text(node->num_value,
+                                            node->str_value ? node->str_value : "");
+            return eval_result_str(node->str_value ? node->str_value : "");
 
         case EXPR_LITERAL_NULL:
             return eval_result_null();
@@ -911,9 +984,8 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
                '' literal is a non-NULL empty string. */
             if (field == NULL || field[0] == '\0') return eval_result_null();
 
-            /* The same classification as string literals: numeric-looking cell
-               text IS numeric, carrying its raw text for display. */
-            return classify_text(field);
+            /* Same classification as literals, memoized per row. */
+            return cell_classify(ctx, idx);
         }
 
         /* ===== Unary arithmetic ===== */
@@ -1015,15 +1087,31 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
 
 
 
-/* Build the evaluation context for one row. */
+/* Build the evaluation context for one row. memo is the per-row cell
+   classification cache (NULL to disable). */
 EvalCtx eval_ctx_for(CSVRecord *record, char **headers, int header_count,
-                            QArena *arena, QArena *tmp, const AggContext *agg) {
+                     QArena *arena, QArena *tmp, CellMemo *memo,
+                     const AggContext *agg) {
     EvalCtx ctx;
     ctx.record = record;
     ctx.headers = headers;
     ctx.header_count = header_count;
     ctx.arena = arena;
     ctx.tmp = tmp;
+    ctx.memo = memo;
     ctx.agg = agg;
+    ctx.depth = 0;
     return ctx;
+}
+
+/* Depth-guarded public entry (see eval_expr_impl above). */
+EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
+    if (node == NULL) return eval_result_null();
+    if (++ctx->depth > MAX_EXPR_DEPTH) {
+        ctx->depth--;
+        return eval_result_error("Expression is too large (max depth 1000).");
+    }
+    EvalResult r = eval_expr_impl(node, ctx);
+    ctx->depth--;
+    return r;
 }

@@ -28,13 +28,25 @@ typedef struct {
 } AggContext;
 
 /* ===== Evaluation context ===== */
+/* Per-row memo of cell text classification (strtod is locale-aware and
+   slow): the first classification of a field in a row is cached for every
+   subsequent reference in WHERE, sort keys, grouping and projection. The
+   memo lives in the temp arena and dies with the row's arena reset. */
+typedef struct {
+    EvalResult *vals;   /* classified result per field index */
+    uint8_t *valid;     /* parallel flags */
+    int cap;            /* == record->field_count */
+} CellMemo;
+
 typedef struct {
     CSVRecord *record;
     char **headers;
     int header_count;
     QArena *arena;    /* result arena: persistent outputs are copied here */
     QArena *tmp;      /* temp arena: per-row transient evaluation scratch */
+    CellMemo *memo;   /* per-row cell classification cache; NULL = none */
     const AggContext *agg;
+    int depth;        /* eval_expr recursion depth (stack-overflow guard) */
 } EvalCtx;
 
 /* ===== EvalResult builders ===== */
@@ -71,6 +83,26 @@ bool like_match(const char *s, const char *p, char esc, bool case_insensitive);
 /* ===== Built-in functions ===== */
 bool is_aggregate_name(const char *name);
 
+/* Aggregate kinds used by the cached per-node dispatch. */
+typedef enum {
+    AGG_NONE = 0,
+    AGG_COUNT,
+    AGG_SUM,
+    AGG_AVG,
+    AGG_MIN,
+    AGG_MAX
+} AggKind;
+
+/* Classify an aggregate name once (AGG_NONE if not an aggregate). */
+AggKind aggregate_kind(const char *name);
+
+/* Resolve a scalar function name once (index into the builtin table, or
+   -1 for an unknown function). */
+int lookup_function_index(const char *name);
+
+/* True when s fully parses as a number; *out receives the value. */
+bool text_parses_numeric(const char *s, double *out);
+
 /* True when a scalar function is volatile (returns a different value on each
    evaluation): such calls must never be constant-folded. */
 bool is_volatile_function(const char *name);
@@ -81,6 +113,7 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx);
 /* Build the evaluation context for one row (agg is NULL outside of
    aggregate finalization). */
 EvalCtx eval_ctx_for(CSVRecord *record, char **headers, int header_count,
-                     QArena *arena, QArena *tmp, const AggContext *agg);
+                     QArena *arena, QArena *tmp, CellMemo *memo,
+                     const AggContext *agg);
 
 #endif

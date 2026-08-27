@@ -19,10 +19,16 @@ typedef struct {
     ParseErrorList *errors;
     QArena *arena;
     const char *source;
-    /* Hard stop flag: set on any arena allocation failure. While set, token
+    /* Hard stop flags: oom on arena allocation failure, too_deep on
+       expression-nesting beyond MAX_EXPR_DEPTH. While either is set, token
        helpers stop consuming and parse entry points unwind with NULL, so no
        broken subtree can escape into the executor. */
     bool oom;
+    bool too_deep;
+    /* Current recursive-descent nesting depth (guarded by MAX_EXPR_DEPTH so
+       the parser itself cannot smash the C stack on nested parens/unary/
+       NOT chains). */
+    int depth;
 } Parser;
 
 /* ===== Init ===== */

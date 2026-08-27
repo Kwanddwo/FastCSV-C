@@ -8,6 +8,7 @@
  * The canonical fixtures live in query/data/ ('query/data/students.csv',
  * 'query/data/distinct.csv', 'query/data/nulls.csv', "query/data/my data.csv").
  */
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,7 @@ typedef enum {
     CHECK_ERROR,
     CHECK_PARSE_ERROR_COUNT,
     CHECK_VALUE,
+    CHECK_FIRST_VALUE,
 } CheckKind;
 
 /* Run one query and assert the expected property. Returns 1 on failure. */
@@ -112,6 +114,18 @@ static int test_sql(const char *sql, CheckKind kind, int expect, const char *exp
                 ok = 1;
             }
             break;
+        case CHECK_FIRST_VALUE:
+            /* Like CHECK_VALUE but for multi-row results: only the first
+               row's first field is compared. */
+            if (res.error) {
+                printf("FAIL: %s\n  -- unexpected error: %s\n", sql, res.error);
+            } else if (res.record_count < 1 || res.records[0]->field_count == 0 ||
+                       strcmp(res.records[0]->fields[0], expect_sub) != 0) {
+                printf("FAIL: %s\n  -- expected first row value '%s'\n", sql, expect_sub);
+            } else {
+                ok = 1;
+            }
+            break;
     }
 
     if (ok) pass++;
@@ -139,6 +153,10 @@ static int test_query_error(const char *sql, const char *expect_sub) {
 
 static int test_query_value(const char *sql, const char *expect_value) {
     return test_sql(sql, CHECK_VALUE, 0, expect_value);
+}
+
+static int test_query_first_value(const char *sql, const char *expect_value) {
+    return test_sql(sql, CHECK_FIRST_VALUE, 0, expect_value);
 }
 
 /* =================================================================
@@ -994,6 +1012,173 @@ static void test_order_by_star_ordinal(void) {
     test_query_error("SELECT * FROM 'query/data/students.csv' ORDER BY 4", "not in the select list");
 }
 
+/* String-returning builtins classify their results like cells and literals:
+   UPPER('05') is the number 5 for comparisons, while display stays raw. */
+static void test_computed_string_typing(void) {
+    printf("--- computed string results are typed\n");
+
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE UPPER('05') = '5'", 5);
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE CONCAT('1','2') = 12", 5);
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE LOWER('05') = 5", 5);
+    test_query_value("SELECT CONCAT('1','2') FROM 'query/data/students.csv' LIMIT 1", "12");
+    test_query_value("SELECT UPPER('007') FROM 'query/data/students.csv' LIMIT 1", "007");
+    test_query_value("SELECT LENGTH(UPPER('007')) FROM 'query/data/students.csv' LIMIT 1", "3");
+    /* Non-numeric computed text stays a string. */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE UPPER('abc') = 'ABC'", 5);
+}
+
+/* The engine pins LC_NUMERIC to "C": under a comma-decimal locale the CSV
+   numbers must still parse and print with '.'. */
+static void test_locale_pinning(void) {
+    printf("--- locale pinning (LC_NUMERIC=C)\n");
+    if (under_valgrind()) {
+        printf("     (skipped under valgrind)\n");
+        pass++;
+        return;
+    }
+
+    fflush(stdout);
+    int pfd[2];
+    if (pipe(pfd) != 0) { printf("FAIL: pipe\n"); fail++; return; }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        close(pfd[1]);
+        setenv("LC_ALL", "de_DE.UTF-8", 1);
+        execl("query/build/csvql", "csvql",
+              "SELECT 1.5 + 1 FROM 'query/data/students.csv' LIMIT 1",
+              (char*)NULL);
+        _exit(4);
+    }
+    close(pfd[1]);
+    char buf[2048];
+    ssize_t n = read(pfd[0], buf, sizeof(buf) - 1);
+    close(pfd[0]);
+    waitpid(pid, NULL, 0);
+    buf[n > 0 ? n : 0] = '\0';
+
+    /* 2.5 with a dot — never 2,5 — regardless of the environment locale. */
+    if (strstr(buf, "2.5") != NULL && strstr(buf, "2,5") == NULL) {
+        pass++;
+    } else {
+        fail++;
+        printf("FAIL: locale pinning: output '%.120s'\n", buf);
+    }
+}
+
+/* ORDER BY ties must resolve identically on the top-k and full-sort paths:
+   equal keys order by arrival (stable), independent of the LIMIT window. */
+static void test_order_by_tie_determinism(void) {
+    printf("--- ORDER BY tie determinism (top-k vs full sort)\n");
+
+    const char *ties = "/tmp/opencode/ties.csv";
+    FILE *f = fopen(ties, "w");
+    if (f == NULL) { fail++; printf("FAIL: cannot create %s\n", ties); return; }
+    fprintf(f, "name,a\n");
+    fprintf(f, "e1,1\ne2,1\ne3,1\nb,2\na,3\n");
+    fclose(f);
+
+    /* Same first row whether LIMIT 1 (top-k), LIMIT 3 (top-k) or no LIMIT
+       (full sort). */
+    test_query_value("SELECT name FROM '/tmp/opencode/ties.csv' ORDER BY a LIMIT 1", "e1");
+    test_query_first_value("SELECT name FROM '/tmp/opencode/ties.csv' ORDER BY a LIMIT 3", "e1");
+    test_query_first_value("SELECT name FROM '/tmp/opencode/ties.csv' ORDER BY a", "e1");
+    test_query_value("SELECT name FROM '/tmp/opencode/ties.csv' ORDER BY a DESC LIMIT 1", "a");
+
+    /* Large window (> QUERY_TOPK_MAX_K) forces the full-sort path; equal
+       keys must yield the same winner as the top-k path. */
+    const char *big = "/tmp/opencode/bigties.csv";
+    f = fopen(big, "w");
+    if (f == NULL) { fail++; printf("FAIL: cannot create %s\n", big); return; }
+    fprintf(f, "k,v\n");
+    for (int i = 0; i < 70000; i++) fprintf(f, "%d,%d\n", i, i % 3);
+    fclose(f);
+
+    test_query_value("SELECT k FROM '/tmp/opencode/bigties.csv' ORDER BY v LIMIT 1", "0");
+    test_query_first_value("SELECT k FROM '/tmp/opencode/bigties.csv' ORDER BY v LIMIT 70000", "0");
+    test_query_value("SELECT k FROM '/tmp/opencode/bigties.csv' ORDER BY v DESC, k DESC LIMIT 1", "69998");
+}
+
+/* Deep nesting must fail cleanly with the depth-limit error, not smash the
+   C stack: nested parens, spaced unary chains, and NOT chains all used to
+   recurse in the parser before any post-parse check could run. */
+static void test_deep_nesting(void) {
+    printf("--- deep nesting (clean failure)\n");
+
+    static char paren[8192];
+    int p = 0;
+    paren[p++] = 'S';
+    paren[p++] = 'E';
+    paren[p++] = 'L';
+    paren[p++] = 'E';
+    paren[p++] = 'C';
+    paren[p++] = 'T';
+    paren[p++] = ' ';
+    for (int i = 0; i < 2000; i++) paren[p++] = '(';
+    paren[p++] = '1';
+    for (int i = 0; i < 2000; i++) paren[p++] = ')';
+    strcpy(paren + p, " FROM 'query/data/students.csv'");
+    test_query_error(paren, "too large");
+
+    static char unary[8192];
+    p = 0;
+    memcpy(unary + p, "SELECT ", 7); p += 7;
+    for (int i = 0; i < 2000; i++) { unary[p++] = '-'; unary[p++] = ' '; }
+    memcpy(unary + p, "1 FROM 'query/data/students.csv'", 33); p += 33;
+    unary[p] = '\0';
+    test_query_error(unary, "too large");
+
+    static char nots[8192];
+    const char *pre = "SELECT 1 FROM 'query/data/students.csv' WHERE ";
+    p = 0;
+    memcpy(nots + p, pre, strlen(pre)); p += (int)strlen(pre);
+    for (int i = 0; i < 2000; i++) { memcpy(nots + p, "NOT ", 4); p += 4; }
+    memcpy(nots + p, "age > 20", 8); p += 8;
+    nots[p] = '\0';
+    test_query_error(nots, "too large");
+
+    /* Reasonable nesting still works (depth well under the cap). */
+    static char ok[256];
+    p = 0;
+    memcpy(ok + p, "SELECT ", 7); p += 7;
+    for (int i = 0; i < 10; i++) ok[p++] = '(';
+    ok[p++] = '1';
+    for (int i = 0; i < 10; i++) ok[p++] = ')';
+    strcpy(ok + p, " FROM 'query/data/students.csv' LIMIT 1");
+    test_query_value(ok, "1");
+}
+
+/* Float-to-int conversions clamp instead of invoking UB: SUBSTR with a
+   huge start/length and ROUND with a huge decimals argument must produce
+   clean results. (The scanner has no scientific notation, so huge literals
+   are written as long digit strings, which strtod parses fully.) */
+static void test_cast_clamping(void) {
+    printf("--- float->int clamping\n");
+
+    static char big[320];   /* 300 nines ~ 1e300 */
+    memset(big, '9', 300);
+    big[300] = '\0';
+    static char neg[320];
+    neg[0] = '-';
+    memcpy(neg + 1, big, 300);
+    neg[301] = '\0';
+
+    static char sql[800];
+    snprintf(sql, sizeof(sql), "SELECT SUBSTR(name, %s) FROM 'query/data/students.csv' LIMIT 1", big);
+    test_query_value(sql, "");
+    snprintf(sql, sizeof(sql), "SELECT SUBSTR(name, %s, %s) FROM 'query/data/students.csv' LIMIT 1", big, big);
+    test_query_value(sql, "");
+    snprintf(sql, sizeof(sql), "SELECT SUBSTR(name, %s, 2) FROM 'query/data/students.csv' LIMIT 1", neg);
+    test_query_value(sql, "Al");
+    snprintf(sql, sizeof(sql), "SELECT ROUND(2.5, %s) FROM 'query/data/students.csv' LIMIT 1", big);
+    test_query_value(sql, "2.5");
+    snprintf(sql, sizeof(sql), "SELECT ROUND(2.5, %s) FROM 'query/data/students.csv' LIMIT 1", neg);
+    test_query_value(sql, "0");
+    snprintf(sql, sizeof(sql), "SELECT SUBSTR(name, 1, %s) FROM 'query/data/students.csv' LIMIT 1", big);
+    test_query_value(sql, "Alice");
+}
+
 /* RANDOM() must be volatile: one value per row (never constant-folded to a
    single statement value), and each process launch must see a fresh random
    sequence (the old code used unseeded rand(), so every run started at
@@ -1152,6 +1337,23 @@ static void test_repl_splitter(void) {
     }
 }
 
+/* Base address-space usage of the test process, in kB (used to pick caps
+   that leave room for the parse arena but not the whole query). */
+static long test_process_vm_kb(void) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (f == NULL) return -1;
+    char line[256];
+    long kb = -1;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (strncmp(line, "VmSize:", 7) == 0) {
+            kb = strtol(line + 7, NULL, 10);
+            break;
+        }
+    }
+    fclose(f);
+    return kb;
+}
+
 /* Regression: parse-time memory exhaustion must abort the statement with
    exactly "Out of memory." — never a crash, and never a misleading runtime
    or syntax error produced from a partially built statement (the old code
@@ -1188,9 +1390,17 @@ static void test_parse_oom(void) {
         for (int i = 0; i < 40000; i++) strcat(sql, ",1");
         strcat(sql, ")");
 
-        const int caps_kb[] = { 12000, 10000, 8000, 6000 };
+        long vm = test_process_vm_kb();
+        /* Caps relative to the child's own address-space base: enough for
+           the parse to start, tight enough that the ~5MB IN-list parse
+           exhausts mid-way. */
+        const long caps_kb[] = {
+            vm + 8192, vm + 6144, vm + 4096, vm + 2048, vm + 1024
+        };
         bool any_error = false;
+        char first_error[128] = "";
         for (size_t c = 0; c < sizeof(caps_kb) / sizeof(caps_kb[0]); c++) {
+            if (caps_kb[c] <= 0) continue;
             struct rlimit lim;
             lim.rlim_cur = (rlim_t)caps_kb[c] * 1024;
             lim.rlim_max = (rlim_t)caps_kb[c] * 1024;
@@ -1210,16 +1420,25 @@ static void test_parse_oom(void) {
                     free(sql);
                     _exit(0);
                 }
+                if (first_error[0] == '\0') {
+                    snprintf(first_error, sizeof(first_error), "%s", res.error);
+                }
                 query_result_destroy(&res);
                 continue; /* a lower cap should hit parse-time OOM */
             }
             query_result_destroy(&res);
         }
         free(sql);
-        if (!any_error)
+        /* One write at exit: the parent closes the pipe once it has read the
+           verdict, and any later write would SIGPIPE the child. */
+        if (!any_error) {
             write(pfd[1], "NO-OOM\n", 7); /* caps never bit; nothing to assert */
-        else
-            write(pfd[1], "NOT-OOM\n", 8);
+        } else {
+            char m[160];
+            int mn = snprintf(m, sizeof(m), "NOT-OOM:%s\n", first_error);
+            if (mn > 0 && (size_t)mn < sizeof(m)) write(pfd[1], m, (size_t)mn);
+            else write(pfd[1], "NOT-OOM\n", 8);
+        }
         _exit(0);
     } else if (pid > 0) {
         close(pfd[1]);
@@ -1236,10 +1455,15 @@ static void test_parse_oom(void) {
             pass++;
         } else {
             fail++;
-            printf("FAIL: parse OOM -> %s", WIFSIGNALED(st) ? "child crashed (signal)\n"
-                                                             : (strcmp(msg, "NOT-OOM\n") == 0
-                                                                ? "non-OOM error under memory pressure\n"
-                                                                : msg));
+            if (WIFSIGNALED(st)) {
+                printf("FAIL: parse OOM -> child crashed (signal %d)\n", WTERMSIG(st));
+            } else if (strncmp(msg, "NOT-OOM:", 8) == 0) {
+                printf("FAIL: parse OOM -> non-OOM error: %s", msg + 8);
+            } else if (strcmp(msg, "NOT-OOM\n") == 0) {
+                printf("FAIL: parse OOM -> non-OOM error under memory pressure\n");
+            } else {
+                printf("FAIL: parse OOM -> %s", msg);
+            }
         }
     } else {
         printf("FAIL: fork\n");
@@ -1297,8 +1521,13 @@ int main(void) {
     test_too_deep_expression();
     test_typing_uniformity();
     test_concat_operator();
+    test_computed_string_typing();
+    test_locale_pinning();
+    test_order_by_tie_determinism();
     test_star_aggregates();
     test_order_by_star_ordinal();
+    test_deep_nesting();
+    test_cast_clamping();
     test_random_function();
     test_repl_splitter();
     test_parse_oom();
