@@ -320,7 +320,9 @@ static void test_function_calls(void) {
     test_query_value("SELECT AVG(DISTINCT val) FROM 'query/data/distinct.csv'", "5.7");
     test_query("SELECT grp, COUNT(DISTINCT val) FROM 'query/data/distinct.csv' GROUP BY grp", 3);
     /* Aggregate DISTINCT compares typed values, but row-level DISTINCT dedupes
-       the projected cell text: raw '05' and '5' stay distinct rows. */
+       the projected cell text: raw '05' and '5' stay distinct rows. (Value
+       equality is numeric — '05' = '5' is true — while dedupe reports the
+       displayed value, which keeps the round-trip fidelity of the output.) */
     test_query("SELECT DISTINCT val FROM 'query/data/distinct.csv'", 8);
     /* Pass-through projection keeps cell text verbatim ('05' is not
        reformatted to '5') and empty cells project as empty strings. */
@@ -891,6 +893,31 @@ static bool under_valgrind(void) {
     return found;
 }
 
+/* The engine has a single typing rule: text that parses as a number IS a
+   number, identically for CSV cells and string literals. A predicate must
+   mean the same thing regardless of whether an operand is a column. */
+static void test_typing_uniformity(void) {
+    printf("--- typing uniformity (cells and literals)\n");
+
+    /* Literal vs literal numeric equality: '05' = '5' is true (both parse). */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE '05' = '5'", 5);
+    /* Cell vs literal uses the same rule: val = '05' matches both '05' and
+       '5' rows, exactly like val = '5'. */
+    test_query_value("SELECT COUNT(*) FROM 'query/data/distinct.csv' WHERE val = '05'", "2");
+    test_query_value("SELECT COUNT(*) FROM 'query/data/distinct.csv' WHERE val = '5'", "2");
+    /* A non-numeric string never equals a number. */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE 'abc' = '5' AND 'abc' = 5", 0);
+    /* Typing affects computations only: display and string functions see
+       the raw text. */
+    test_query_value("SELECT '007' FROM 'query/data/students.csv' LIMIT 1", "007");
+    test_query_value("SELECT LENGTH('007') FROM 'query/data/students.csv' LIMIT 1", "3");
+    test_query_value("SELECT '007' + 0 FROM 'query/data/students.csv' LIMIT 1", "7");
+    /* Empty cell (absent) vs '' (empty string) stays a distinct, documented
+       pair: non-NULL-empty strings compare equal to themselves only. */
+    test_query("SELECT 1 FROM 'query/data/nulls.csv' WHERE note = ''", 0);
+    test_query("SELECT 1 FROM 'query/data/nulls.csv' WHERE name = 'Alice'", 1);
+}
+
 /* Regression: parse-time memory exhaustion must abort the statement with
    exactly "Out of memory." — never a crash, and never a misleading runtime
    or syntax error produced from a partially built statement (the old code
@@ -1033,6 +1060,7 @@ int main(void) {
     test_comments();
     test_large_expression();
     test_too_deep_expression();
+    test_typing_uniformity();
     test_parse_oom();
 
     printf("\n=== Results ===\n");

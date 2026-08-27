@@ -92,7 +92,7 @@ bool topk_would_keep(const TopK *tk, const EvalResult *keys) {
    temp arena resets. */
 static void persist_keys(QArena *arena, EvalResult *keys, int key_count) {
     for (int j = 0; j < key_count; j++) {
-        if (!keys[j].is_numeric && keys[j].str_val)
+        if (keys[j].str_val)
             keys[j].str_val = qarena_strdup(arena, keys[j].str_val);
     }
 }

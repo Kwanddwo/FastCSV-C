@@ -116,10 +116,14 @@ static const char* agg_seen_add(AggState *st, const EvalResult *v, QArena *arena
     return NULL;
 }
 
-/* Install v as the MIN/MAX best value (string copies are arena-owned). */
+/* Install v as the MIN/MAX best value (string copies are arena-owned). A
+   numeric value that carries its raw text (from a CSV cell or literal) has
+   its text duplicated too: the raw pointer may be reader-owned and must not
+   dangle once the scan moves on. */
 static void agg_best_set(AggState *st, const EvalResult *v, QArena *arena) {
     if (v->is_numeric) {
         st->best = *v;
+        if (v->str_val) st->best.str_val = qarena_strdup(arena, v->str_val);
     } else {
         st->best.is_null = false;
         st->best.is_numeric = false;

@@ -434,7 +434,7 @@ QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
                 if (group_by_k > 0) {
                     for (int j = 0; j < group_by_k; j++) {
                         g->keys[j] = keys[j];
-                        if (!keys[j].is_numeric && keys[j].str_val)
+                        if (keys[j].str_val)
                             g->keys[j].str_val = qarena_strdup(arena, keys[j].str_val);
                     }
                 }

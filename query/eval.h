@@ -40,6 +40,10 @@ typedef struct {
 /* ===== EvalResult builders ===== */
 EvalResult eval_result_null(void);
 EvalResult eval_result_num(double val);
+/* A numeric value whose raw text is preserved for display and string
+   functions (e.g. a cell or literal "05"): is_numeric is true, but
+   eval_result_to_string yields the original text, not a reformatted number. */
+EvalResult eval_result_num_text(double val, const char *raw_text);
 EvalResult eval_result_str(const char *s);
 EvalResult eval_result_error(const char *msg);
 bool eval_result_is_error(const EvalResult *r);

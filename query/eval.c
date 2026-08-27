@@ -42,6 +42,12 @@ EvalResult eval_result_num(double val) {
     return r;
 }
 
+EvalResult eval_result_num_text(double val, const char *raw_text) {
+    EvalResult r = eval_result_num(val);
+    r.str_val = raw_text ? raw_text : "";
+    return r;
+}
+
 EvalResult eval_result_str(const char *s) {
     EvalResult r;
     r.is_error = false;
@@ -75,6 +81,18 @@ bool eval_result_is_true(const EvalResult *r) {
     return r->str_val != NULL && r->str_val[0] != '\0';
 }
 
+/* Classify a text value exactly once, regardless of whether it came from a
+   CSV cell or a SQL literal: text that fully parses as a number IS a
+   number (the engine's single typing rule), carrying its raw text so
+   display and string functions see the original spelling. Anything else is
+   a string. */
+static EvalResult classify_text(const char *s) {
+    char *end;
+    double v = strtod(s, &end);
+    if (*end == '\0' && end != s) return eval_result_num_text(v, s);
+    return eval_result_str(s);
+}
+
 /* A string is numeric-like if it fully parses as a number, using the same
    rule as the column evaluator so literals classify identically to cells.
    Numeric values pass through unchanged. */
@@ -94,13 +112,18 @@ bool parse_numeric_str(const EvalResult *r, double *out) {
     return false;
 }
 
-/* Value comparison. CSV has no declared column types, so a numeric value
-   compares numerically against a string that parses as a number ('5' = 5 is
-   true, '05' = 5 is true); a string that is not numeric never equals or
-   orders below a number (NULL < numeric < text, SQLite storage-class order).
-   Two strings compare textually even if both look numeric ('05' = '5' is
-   false). This is the single ordering used by WHERE/HAVING predicates, ORDER
-   BY (qsort and the top-k heap), DISTINCT aggregates, and MIN/MAX. */
+/* Value comparison. CSV has no declared column types; the engine's single
+   typing rule: text that fully parses as a number IS a number, identically
+   for CSV cells and string literals ('05' classifies as 5 from either
+   source). Therefore '05' = '5' is true, a cell "05" = a cell "5" is true,
+   and a cell "05" = the literal '05' is true — the same predicate means the
+   same thing whatever the operand's origin. A string that is not numeric
+   never equals or orders below a number (NULL < numeric < text, SQLite
+   storage-class order). Two non-numeric strings compare textually. This is
+   the single ordering used by WHERE/HAVING predicates, ORDER BY (qsort and
+   the top-k heap), DISTINCT aggregates, GROUP BY keys, and MIN/MAX. Raw text
+   is only a display concern: classified values keep their original spelling
+   when shown, while arithmetic and comparisons use the numeric value. */
 int eval_result_compare(const EvalResult *a, const EvalResult *b) {
     if (a->is_null && b->is_null) return 0;
     if (a->is_null) return -1;
@@ -123,12 +146,14 @@ int eval_result_compare(const EvalResult *a, const EvalResult *b) {
 }
 
 /* Duplicate an EvalResult's display value into the arena with a single
-   copy (numeric values are formatted straight into the arena). Returns
-   NULL on allocation failure. */
+   copy. A numeric value that carries its raw text (cells and literals like
+   "05") displays verbatim — the engine types text for computation but
+   never reformats it for display. Returns NULL on allocation failure. */
 const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena) {
     if (r->is_error) return r->error ? r->error : "";
     if (r->is_null) return "NULL";
     if (r->is_numeric) {
+        if (r->str_val != NULL) return qarena_strdup(arena, r->str_val);
         char buf[128];
         double v = r->num_val;
         /* The range check must precede the cast: casting an out-of-range
@@ -763,7 +788,7 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
             return eval_result_num(node->num_value);
 
         case EXPR_LITERAL_STRING:
-            return eval_result_str(node->str_value ? node->str_value : "");
+            return classify_text(node->str_value ? node->str_value : "");
 
         case EXPR_LITERAL_NULL:
             return eval_result_null();
@@ -792,13 +817,9 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
                '' literal is a non-NULL empty string. */
             if (field == NULL || field[0] == '\0') return eval_result_null();
 
-            /* Try to parse as number */
-            char *endptr;
-            double val = strtod(field, &endptr);
-            if (*endptr == '\0' && endptr != field) {
-                return eval_result_num(val);
-            }
-            return eval_result_str(field);
+            /* The same classification as string literals: numeric-looking cell
+               text IS numeric, carrying its raw text for display. */
+            return classify_text(field);
         }
 
         /* ===== Unary arithmetic ===== */

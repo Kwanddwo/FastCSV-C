@@ -151,10 +151,15 @@ no tuning, no environment variables.
 - **Pass-through columns are verbatim**: a bare column reference (including
   every column of `SELECT *`) projects the raw cell text, so values like `05`
   or `3.50` round-trip unchanged and an empty cell prints as an empty field,
-  not the literal text `NULL`. Value typing (numeric parsing of numeric-looking
-  cells) only kicks in when a computation actually needs a value (arithmetic,
-  comparisons, aggregates); those computed results may be reformatted
-  numerically (`'05' + 1` yields `6`).
+  not the literal text `NULL`.
+- **One typing rule**: text that fully parses as a number IS a number —
+  identically for CSV cells and string literals — so `'05' = '5'`, a cell
+  `05` compared to a cell `5`, and `val = '05'` are all true on the same
+  values, and GROUP BY classes them together (comparisons, grouping,
+  aggregate DISTINCT and MIN/MAX share this classification). Raw text is
+  preserved for display (`SELECT '007'` prints `007`; `LENGTH('007')` is 3),
+  while computations use the numeric value (`'007' + 0` is `7`). Typing only
+  happens when a computation actually needs a value.
 - **Functions**: scalar `UPPER/UCASE`, `LOWER/LCASE`, `LENGTH`/`CHAR_LENGTH`/
   `CHARACTER_LENGTH`, `TRIM`, `SUBSTR`/`SUBSTRING`, `CONCAT`, `COALESCE`/
   `IFNULL`, `POSITION(sub IN str)`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`,
