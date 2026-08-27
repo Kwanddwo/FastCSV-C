@@ -167,6 +167,7 @@ static Token scan_number(Scanner *scanner) {
 static Token scan_string(Scanner *scanner) {
     for (;;) {
         if (is_at_end(scanner)) {
+            scanner->incomplete = true;
             return error_token(scanner, "Unterminated string.");
         }
         char c = peek(scanner);
@@ -201,7 +202,8 @@ static Token scan_quoted_identifier(Scanner *scanner) {
     scanner->start = scanner->current;   /* exclude the opening quote */
     for (;;) {
         if (is_at_end(scanner)) {
-            return error_token(scanner, "Unterminated identifier.");
+            scanner->incomplete = true;
+        return error_token(scanner, "Unterminated identifier.");
         }
         char c = peek(scanner);
         if (c == '"') break;
@@ -269,6 +271,7 @@ Token scan_token(Scanner *scanner) {
         }
         if (peek(scanner) == '/' && scanner->current[1] == '*') {
             if (!skip_block_comment(scanner)) {
+                scanner->incomplete = true;
                 return error_token(scanner, "Unterminated comment.");
             }
             continue;
@@ -319,5 +322,6 @@ Scanner scanner_init(const char *source) {
     scanner.current = source;
     scanner.line = 1;
     scanner.column = 0;
+    scanner.incomplete = false;
     return scanner;
 }

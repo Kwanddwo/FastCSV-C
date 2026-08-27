@@ -10,6 +10,7 @@
 #include "csv_reader.h"
 #include "query/query.h"
 #include "query/str_util.h"
+#include "scanner.h"
 #include "deps/linenoise.h"
 
 #define CFG_ARENA_SIZE (2 * 1024)
@@ -202,145 +203,114 @@ static char* trim_ws(char *s) {
 }
 
 /* ===== Comment-aware text scanning =====
- * The scanner handles comments inside SQL, but the shell also reads raw SQL
- * text: deciding when a statement is complete, splitting ';'-separated
- * statements, and folding history lines. All three must understand "--"
- * line comments and "slash-star" block comments, or an apostrophe or ';'
- * inside a comment would break them. */
-typedef enum {
-    SCAN_NORMAL,
-    SCAN_STRING,
-    SCAN_LINE_COMMENT,
-    SCAN_BLOCK_COMMENT,
-} ScanState;
+ * The shell reads raw SQL text: deciding when a statement is complete,
+ * splitting ';'-separated statements, and folding history lines. All three
+ * must use the real lexer (scanner.h) rather than a shadow tokenizer, or
+ * strings, quoted identifiers and comments would drift apart. */
 
-/* Classify buf[i] (with lookahead at buf[i+1]) and update *st for what
-   follows. Returns the number of characters consumed (1 or 2; doubled
-   quotes and the closing "star slash" consume both) and sets *significant
-   when the character counts as significant, i.e. outside strings and
-   comments. */
-static int scan_char(ScanState *st, char c, char next, bool *significant) {
-    *significant = false;
-    switch (*st) {
-        case SCAN_LINE_COMMENT:
-            if (c == '\n') *st = SCAN_NORMAL;
-            return 1;
-        case SCAN_BLOCK_COMMENT:
-            if (c == '*' && next == '/') {
-                *st = SCAN_NORMAL;
-                return 2;
-            }
-            return 1;
-        case SCAN_STRING:
-            if (c == '\'') {
-                if (next == '\'') return 2;   /* '' escape stays in the string */
-                *st = SCAN_NORMAL;
-            }
-            return 1;
-        case SCAN_NORMAL:
-            if (c == '\'') { *st = SCAN_STRING; return 1; }
-            if (c == '-' && next == '-') { *st = SCAN_LINE_COMMENT; return 1; }
-            if (c == '/' && next == '*') { *st = SCAN_BLOCK_COMMENT; return 1; }
-            *significant = !isspace((unsigned char)c);
-            return 1;
+/* One pass through the real scanner over a NUL-terminated buffer. Sets
+   *saw_code (any token before EOF; comments are invisible to the lexer),
+   *incomplete (the lexer stopped inside a string/identifier/comment open at
+   end of input) and *last_type (last token type before EOF). */
+static void text_scan(const char *text, bool *saw_code, bool *incomplete,
+                      TokenType *last_type) {
+    Scanner sc = scanner_init(text);
+    bool saw = false;
+    TokenType last = TOKEN_EOF;
+    for (;;) {
+        Token t = scan_token(&sc);
+        if (t.type == TOKEN_EOF) break;
+        saw = true;
+        last = t.type;
     }
-    return 1;
+    if (saw_code) *saw_code = saw;
+    if (incomplete) *incomplete = sc.incomplete;
+    if (last_type) *last_type = last;
 }
 
 /* True when the trimmed line is only a comment: it behaves like a blank
-   line in the REPL (it executes the pending statement). A "--" line is
-   always a comment; a "slash-star" line only when the block closes on the
-   line, since an open block comment can span lines. */
+   line in the REPL (it executes the pending statement). An unterminated
+   block comment still counts as a comment here: the statement-completeness
+   check keeps reading until it closes. */
 static bool comment_only_line(const char *t) {
-    if (str_nieq(t, "--", 2)) return true;
-    if (str_nieq(t, "/*", 2)) {
-        for (const char *q = t + 2; *q; q++) {
-            if (q[0] == '*' && q[1] == '/') return true;
-        }
-    }
-    return false;
+    bool saw;
+    text_scan(t, &saw, NULL, NULL);
+    return !saw;
 }
 
-/* True when the buffered statement is finished: the last significant
- * character outside of string literals and comments is ';'. An unclosed
- * single-quote or block comment keeps reading (both may span lines). */
+/* True when the buffered statement is finished: no construct left open and
+   the last significant token (outside strings, quoted identifiers and
+   comments) is ';'. Unterminated strings and block comments keep reading
+   (both may span lines). */
 static bool statement_complete(const char *buf) {
-    ScanState st = SCAN_NORMAL;
-    bool seen = false;
-    bool last_semicolon = false;
-    for (int i = 0; buf[i];) {
-        bool significant;
-        int n = scan_char(&st, buf[i], buf[i + 1], &significant);
-        if (significant) {
-            seen = true;
-            last_semicolon = (buf[i] == ';');
-        }
-        i += n;
-    }
-    if (st == SCAN_STRING || st == SCAN_BLOCK_COMMENT) return false;
-    if (!seen) return true; /* whitespace/comments only */
-    return last_semicolon;
+    bool saw, incomplete;
+    TokenType last;
+    text_scan(buf, &saw, &incomplete, &last);
+    if (incomplete) return false;
+    if (!saw) return true; /* whitespace/comments only */
+    return last == TOKEN_SEMICOLON;
 }
 
-/* Execute one or more ';'-separated statements. Segments made of only
-   whitespace and comments are skipped. */
+/* Execute one ';'-delimited segment [start,end). Whitespace-only and
+   comment-only segments are skipped. */
+static void run_segment(CSVConfig *config, const char *start, const char *end) {
+    while (start < end && isspace((unsigned char)*start)) start++;
+    while (end > start && isspace((unsigned char)end[-1])) end--;
+    if (end <= start) return;
+
+    size_t seglen = (size_t)(end - start);
+    char *seg = malloc(seglen + 1);
+    if (seg == NULL) return;
+    memcpy(seg, start, seglen);
+    seg[seglen] = '\0';
+
+    bool saw;
+    text_scan(seg, &saw, NULL, NULL);
+    if (!saw) { free(seg); return; } /* comments only */
+
+    QueryResult res = query_execute(config, seg);
+    print_result(&res, seg);
+    printf("\n");
+    query_result_destroy(&res);
+
+    free(seg);
+}
+
+/* Execute one or more ';'-separated statements. The real lexer delivers a
+   TOKEN_SEMICOLON only at the top level: a ';' inside a string literal, a
+   double-quoted identifier ("my;data.csv") or a comment never splits. */
 static void exec_statement(CSVConfig *config, const char *stmt) {
-    ScanState st = SCAN_NORMAL;
-    const char *seg_start = stmt;
-    bool seg_has_code = false;
+    Scanner sc = scanner_init(stmt);
+    const char **semi_ends = NULL;
+    int semi_count = 0;
+    int semi_cap = 0;
 
-    const char *p = stmt;
-    while (*p) {
-        bool significant;
-        int n = scan_char(&st, *p, p[1], &significant);
-        if (significant) seg_has_code = true;
-
-        if (*p == ';' && significant) {
-            const char *seg_end = p;
-            if (seg_has_code) {
-                while (seg_start < seg_end &&
-                       isspace((unsigned char)*seg_start)) seg_start++;
-                while (seg_end > seg_start &&
-                       isspace((unsigned char)seg_end[-1])) seg_end--;
-                if (seg_end > seg_start) {
-                    size_t seglen = (size_t)(seg_end - seg_start);
-                    char *seg = malloc(seglen + 1);
-                    memcpy(seg, seg_start, seglen);
-                    seg[seglen] = '\0';
-
-                    QueryResult res = query_execute(config, seg);
-                    print_result(&res, seg);
-                    printf("\n");
-                    query_result_destroy(&res);
-
-                    free(seg);
-                }
+    for (;;) {
+        Token t = scan_token(&sc);
+        if (t.type == TOKEN_EOF) break;
+        if (t.type == TOKEN_SEMICOLON) {
+            if (semi_count >= semi_cap) {
+                int new_cap = semi_cap ? semi_cap * 2 : 8;
+                const char **ne = (const char**)realloc(
+                    semi_ends, sizeof(char*) * (size_t)new_cap);
+                if (ne == NULL) break;
+                semi_ends = ne;
+                semi_cap = new_cap;
             }
-            /* ';' with no code before it is just a separator (e.g. ";;") */
-            seg_has_code = false;
-            seg_start = p + 1;
-        }
-        p += n;
-    }
-
-    if (seg_has_code) {
-        const char *seg_end = p;
-        while (seg_start < seg_end && isspace((unsigned char)*seg_start)) seg_start++;
-        while (seg_end > seg_start && isspace((unsigned char)seg_end[-1])) seg_end--;
-        if (seg_end > seg_start) {
-            size_t seglen = (size_t)(seg_end - seg_start);
-            char *seg = malloc(seglen + 1);
-            memcpy(seg, seg_start, seglen);
-            seg[seglen] = '\0';
-
-            QueryResult res = query_execute(config, seg);
-            print_result(&res, seg);
-            printf("\n");
-            query_result_destroy(&res);
-
-            free(seg);
+            semi_ends[semi_count++] = t.lexeme + t.length;
         }
     }
+
+    const char *seg_start = stmt;
+    for (int i = 0; i < semi_count; i++) {
+        /* The segment is the text before the ';' terminator, which is never
+           part of the statement. */
+        run_segment(config, seg_start, semi_ends[i] - 1);
+        seg_start = semi_ends[i];
+    }
+    run_segment(config, seg_start, stmt + strlen(stmt));
+
+    free(semi_ends);
 }
 
 /* ===== Meta commands ===== */
@@ -423,6 +393,18 @@ static const char* history_path(void) {
     return path;
 }
 
+/* True when the byte range [start,end) contains a comment marker. Gaps
+   between lexer tokens are composed exclusively of whitespace and comments,
+   so two-char "dash dash" and "slash star" can only appear as comment
+   openers. */
+static bool gap_has_comment(const char *start, const char *end) {
+    for (const char *p = start; p + 1 < end; p++) {
+        if (p[0] == '-' && p[1] == '-') return true;
+        if (p[0] == '/' && p[1] == '*') return true;
+    }
+    return false;
+}
+
 static void maybe_add_history(const char *stmt) {
     const char *s = stmt;
     while (*s && (isspace((unsigned char)*s) || *s == ';')) s++;
@@ -432,17 +414,43 @@ static void maybe_add_history(const char *stmt) {
     char *e = copy + strlen(copy);
     while (e > copy && isspace((unsigned char)e[-1])) e--;
     *e = '\0';
-    /* Fold newlines outside string literals into spaces so multi-line
-     * statements are recalled as a single line. Newlines inside comments
-     * are left alone (comments run to the end of the line). */
-    ScanState st = SCAN_NORMAL;
-    for (char *p = copy; *p;) {
-        bool significant;
-        ScanState before = st;
-        int n = scan_char(&st, *p, p[1], &significant);
-        if (*p == '\n' && before == SCAN_NORMAL) *p = ' ';
-        p += n;
+
+    /* Fold newlines outside strings, quoted identifiers and comments into
+       spaces so multi-line statements are recalled as a single line. The
+       gaps between real tokens contain only whitespace/comments (the lexer
+       consumed them), so a raw comment-marker check on a gap is exact; the
+       tokens themselves are copied verbatim, including multi-line strings
+       and double-quoted identifiers. */
+    Scanner sc = scanner_init(stmt);
+    char *out = copy;
+    const char *prev_end = stmt;
+    for (;;) {
+        Token t = scan_token(&sc);
+        if (t.type == TOKEN_EOF) {
+            /* Trailing gap (whitespace / comments / unterminated comment) */
+            bool has_comment = gap_has_comment(prev_end, copy + strlen(copy));
+            for (const char *p = prev_end; *p; p++) {
+                if (*p == '\n' && !has_comment) *out++ = ' ';
+                else *out++ = *p;
+            }
+            break;
+        }
+
+        /* Quoted identifiers reset the scanner start to the content, so the
+           consumed span includes the quotes on both sides. */
+        bool quoted = (t.lexeme > stmt && t.lexeme[-1] == '"');
+        const char *span_begin = quoted ? t.lexeme - 1 : t.lexeme;
+        const char *span_end = span_begin + (quoted ? t.length + 2 : t.length);
+
+        bool has_comment = gap_has_comment(prev_end, span_begin);
+        for (const char *p = prev_end; p < span_begin; p++) {
+            if (*p == '\n' && !has_comment) *out++ = ' ';
+            else *out++ = *p;
+        }
+        for (const char *p = span_begin; p < span_end; p++) *out++ = *p;
+        prev_end = span_end;
     }
+    *out = '\0';
     linenoiseHistoryAdd(copy);
     free(copy);
 }
@@ -535,14 +543,9 @@ static void repl_loop(CSVConfig *config) {
 /* True when the text contains anything other than whitespace and comments.
    Used to skip comment-only input in one-shot mode. */
 static bool has_significant_code(const char *s) {
-    ScanState st = SCAN_NORMAL;
-    for (const char *p = s; *p;) {
-        bool significant;
-        int n = scan_char(&st, *p, p[1], &significant);
-        if (significant) return true;
-        p += n;
-    }
-    return false;
+    bool saw;
+    text_scan(s, &saw, NULL, NULL);
+    return saw;
 }
 
 /* ===== Entry point ===== */

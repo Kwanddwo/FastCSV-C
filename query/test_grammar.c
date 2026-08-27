@@ -1008,6 +1008,74 @@ static void test_random_function(void) {
     }
 }
 
+/* The REPL's statement splitter must reuse the real lexer: a ';' inside a
+   double-quoted identifier ("my;data.csv") must not split the statement.
+   Pipes the exact scenario through the REPL (argv-less mode) and asserts
+   the query runs instead of dying with "Unterminated identifier". */
+static void test_repl_splitter(void) {
+    printf("--- REPL statement splitter (quoted identifiers)\n");
+    if (under_valgrind()) {
+        printf("     (skipped under valgrind)\n");
+        pass++;
+        return;
+    }
+
+    const char *fixture = "/tmp/opencode/my;data.csv";
+    FILE *f = fopen(fixture, "w");
+    if (f == NULL) {
+        fail++;
+        printf("FAIL: cannot create %s\n", fixture);
+        return;
+    }
+    fprintf(f, "id,val\n1,a\n2,b\n");
+    fclose(f);
+
+    fflush(stdout);
+    int out_p[2], in_p[2];
+    if (pipe(out_p) != 0 || pipe(in_p) != 0) {
+        fail++;
+        printf("FAIL: pipe\n");
+        return;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(out_p[0]);
+        close(in_p[1]);
+        dup2(out_p[1], STDOUT_FILENO);
+        dup2(out_p[1], STDERR_FILENO);
+        close(out_p[1]);
+        dup2(in_p[0], STDIN_FILENO);
+        close(in_p[0]);
+        execl("query/build/csvql", "csvql", (char*)NULL);
+        _exit(4);
+    }
+    close(out_p[1]);
+    close(in_p[0]);
+    const char *input = "SELECT * FROM \"/tmp/opencode/my;data.csv\";\n;\n";
+    if (write(in_p[1], input, strlen(input)) < 0) { /* ignore */ }
+    close(in_p[1]);
+
+    char buf[8192];
+    ssize_t total = 0, n;
+    while ((n = read(out_p[0], buf + total, sizeof(buf) - 1 - (size_t)total)) > 0)
+        total += n;
+    close(out_p[0]);
+    waitpid(pid, NULL, 0);
+    buf[total] = '\0';
+
+    bool ok = strstr(buf, "row(s) in set") != NULL;
+    if (strstr(buf, "Unterminated identifier") != NULL ||
+        strstr(buf, "Expected 'SELECT'") != NULL)
+        ok = false;
+    if (ok) {
+        pass++;
+    } else {
+        fail++;
+        printf("FAIL: REPL splitter: %s\n",
+               buf[0] ? buf : "no output from csvql");
+    }
+}
+
 /* Regression: parse-time memory exhaustion must abort the statement with
    exactly "Out of memory." — never a crash, and never a misleading runtime
    or syntax error produced from a partially built statement (the old code
@@ -1152,6 +1220,7 @@ int main(void) {
     test_too_deep_expression();
     test_typing_uniformity();
     test_random_function();
+    test_repl_splitter();
     test_parse_oom();
 
     printf("\n=== Results ===\n");
