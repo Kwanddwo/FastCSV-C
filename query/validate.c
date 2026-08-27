@@ -82,8 +82,12 @@ static ExprVisit is_constant_visit(ExprNode *node, void *ud) {
         default:
             break;
     }
-    if (node->type == EXPR_FUNCTION_CALL && is_aggregate_name(node->str_value))
-        return EXPR_VISIT_ABORT;
+    if (node->type == EXPR_FUNCTION_CALL) {
+        if (is_aggregate_name(node->str_value)) return EXPR_VISIT_ABORT;
+        /* Volatile functions (e.g. RANDOM()) must be re-evaluated per row:
+           they are not constant, so they must not be folded away. */
+        if (is_volatile_function(node->str_value)) return EXPR_VISIT_ABORT;
+    }
     return EXPR_VISIT_CONTINUE;
 }
 

@@ -69,6 +69,10 @@ bool like_match(const char *s, const char *p, bool case_insensitive);
 /* ===== Built-in functions ===== */
 bool is_aggregate_name(const char *name);
 
+/* True when a scalar function is volatile (returns a different value on each
+   evaluation): such calls must never be constant-folded. */
+bool is_volatile_function(const char *name);
+
 /* Evaluate an expression node against a context. */
 EvalResult eval_expr(ExprNode *node, EvalCtx *ctx);
 

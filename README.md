@@ -164,6 +164,8 @@ no tuning, no environment variables.
   `CHARACTER_LENGTH`, `TRIM`, `SUBSTR`/`SUBSTRING`, `CONCAT`, `COALESCE`/
   `IFNULL`, `POSITION(sub IN str)`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`,
   `SQRT`, `POWER`, `MOD`, `SIGN`, `RANDOM`, `EXP`, `LN`, `LOG10`, `PI`;
+  `RANDOM()` is **volatile** (a fresh value per row, never constant-folded)
+  and seeded per process, so results differ between runs;
   aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` (with `DISTINCT`).
 - **Dates** are ISO-8601 strings (`'YYYY-MM-DD[ HH:MM:SS]'`), which compare
   chronologically as strings. Standard syntax: `CURRENT_DATE`,

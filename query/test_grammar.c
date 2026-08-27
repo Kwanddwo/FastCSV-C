@@ -918,6 +918,96 @@ static void test_typing_uniformity(void) {
     test_query("SELECT 1 FROM 'query/data/nulls.csv' WHERE name = 'Alice'", 1);
 }
 
+/* RANDOM() must be volatile: one value per row (never constant-folded to a
+   single statement value), and each process launch must see a fresh random
+   sequence (the old code used unseeded rand(), so every run started at
+   0.84018771715471). */
+static void test_random_function(void) {
+    printf("--- RANDOM() volatility and seeding\n");
+
+    /* Fold regression: the five rows must carry different values. */
+    {
+        Arena cfg_arena;
+        arena_create(&cfg_arena, 2 * 1024);
+        CSVConfig *cfg = csv_config_create(&cfg_arena);
+        csv_config_set_has_header(cfg, 1);
+        QueryResult res = query_execute(
+            cfg, "SELECT RANDOM() FROM 'query/data/students.csv'");
+        bool ok = res.error == NULL && res.record_count == 5 &&
+                  strcmp(res.records[0]->fields[0], res.records[1]->fields[0]) != 0;
+        if (ok) {
+            pass++;
+        } else {
+            fail++;
+            printf("FAIL: RANDOM() is per-row: %s\n",
+                   res.error ? res.error : "rows 0 and 1 collide");
+        }
+        query_result_destroy(&res);
+        arena_destroy(&cfg_arena);
+    }
+
+    /* Two calls in one row are two draws (distinct with probability ~1). */
+    test_query("SELECT 1 FROM 'query/data/students.csv' WHERE RANDOM() != RANDOM()", 5);
+
+    /* Seeding regression: two *process launches* must see different first
+       values (the old code used unseeded rand(), so every launch started at
+       the same 0.84018771715471). A forked child shares the parent's RNG
+       state, so seed check runs the binary twice. Skipped under valgrind. */
+    if (under_valgrind()) {
+        printf("     (seeding check skipped under valgrind)\n");
+        pass++;
+        return;
+    }
+    fflush(stdout);
+    char values[2][64];
+    bool ok = true;
+    for (int k = 0; k < 2; k++) {
+        values[k][0] = '\0';
+        int pfd[2];
+        if (pipe(pfd) != 0) { ok = false; break; }
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(pfd[0]);
+            dup2(pfd[1], STDOUT_FILENO);
+            close(pfd[1]);
+            execl("query/build/csvql", "csvql",
+                  "SELECT RANDOM() FROM 'query/data/students.csv' LIMIT 1",
+                  (char*)NULL);
+            _exit(4);
+        }
+        close(pfd[1]);
+        char buf[1024];
+        ssize_t n = read(pfd[0], buf, sizeof(buf) - 1);
+        close(pfd[0]);
+        waitpid(pid, NULL, 0);
+        if (n <= 0) { ok = false; break; }
+        buf[n] = '\0';
+        /* First data cell: skip the header cell (| RANDOM() |), then take the
+           next |...| pair. */
+        const char *a = strchr(buf, '|');
+        a = a ? strchr(a + 1, '|') : NULL;   /* skip header row */
+        a = a ? strchr(a + 1, '|') : NULL;   /* data row first | */
+        const char *b = a ? strchr(a + 1, '|') : NULL;
+        if (a == NULL || b == NULL) { ok = false; break; }
+        a++;
+        while (*a == ' ') a++;
+        while (b > a && b[-1] == ' ') b--;
+        if (b - a <= 0 || (size_t)(b - a) >= sizeof(values[k])) {
+            ok = false;
+            break;
+        }
+        memcpy(values[k], a, (size_t)(b - a));
+        values[k][b - a] = '\0';
+    }
+    if (ok && strcmp(values[0], values[1]) != 0) {
+        pass++;
+    } else {
+        fail++;
+        printf("FAIL: RANDOM() sequence repeats across launches (value '%s')\n",
+               values[0][0] ? values[0] : "<none>");
+    }
+}
+
 /* Regression: parse-time memory exhaustion must abort the statement with
    exactly "Out of memory." — never a crash, and never a misleading runtime
    or syntax error produced from a partially built statement (the old code
@@ -1061,6 +1151,7 @@ int main(void) {
     test_large_expression();
     test_too_deep_expression();
     test_typing_uniformity();
+    test_random_function();
     test_parse_oom();
 
     printf("\n=== Results ===\n");

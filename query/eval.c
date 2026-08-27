@@ -1,6 +1,7 @@
 /* Expression evaluation: EvalResult values, built-in and aggregate-aware
  * function dispatch, arithmetic/comparison/logical operators, LIKE matching
  * and the recursive eval_expr tree walk. Split out of executor.c. */
+#define _POSIX_C_SOURCE 200809L
 #include "eval.h"
 #include "aggregate.h"
 #include "date.h"
@@ -10,6 +11,9 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <stdint.h>
+#include <time.h>
+#include <unistd.h>
 
 /* ===== Constants ===== */
 /* Doubles at or beyond this magnitude cannot be converted to long long
@@ -445,9 +449,29 @@ static EvalResult fn_sign(EvalCtx *ctx, ExprNode **args, int arg_count) {
     return eval_result_num(0.0);
 }
 
+bool is_volatile_function(const char *name) {
+    /* RANDOM() is volatile: it must produce a fresh value for every row and
+       must never be constant-folded, like every other SQL engine. */
+    return str_ieq(name, "RANDOM");
+}
+
 static EvalResult fn_random(EvalCtx *ctx, ExprNode **args, int arg_count) {
     (void)ctx; (void)args; (void)arg_count;
-    return eval_result_num((double)rand() / (double)RAND_MAX);
+
+    /* Private splitmix64 PRNG, lazily seeded from time/pid/ASLR so each
+       process launch produces a different sequence and callers never depend
+       on glibc's global rand() state. */
+    static uint64_t state = 0;
+    if (state == 0) {
+        uint64_t addr = (uintptr_t)&state;
+        state = (uint64_t)time(NULL) ^ (uint64_t)clock()
+                ^ (uint64_t)getpid() ^ addr;
+    }
+    uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    z ^= z >> 31;
+    return eval_result_num((double)(z >> 11) / 9007199254740992.0);
 }
 
 static EvalResult fn_exp(EvalCtx *ctx, ExprNode **args, int arg_count) {
