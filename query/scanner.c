@@ -304,7 +304,9 @@ Token scan_token(Scanner *scanner) {
         case '/': return make_token(scanner, TOKEN_SLASH);
         case '%': return make_token(scanner, TOKEN_PERCENT);
         case '&': return make_token(scanner, TOKEN_AMPERSAND);
-        case '|': return make_token(scanner, TOKEN_PIPE);
+        case '|':
+            if (match(scanner, '|')) return make_token(scanner, TOKEN_CONCAT);
+            return make_token(scanner, TOKEN_PIPE);
         case '^': return make_token(scanner, TOKEN_CARET);
         case '(': return make_token(scanner, TOKEN_LPAREN);
         case ')': return make_token(scanner, TOKEN_RPAREN);

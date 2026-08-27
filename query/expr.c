@@ -72,17 +72,21 @@ static ExprNode* parse_additive_expr(Parser *parser) {
     return expr;
 }
 
-/* bitwise_expr ::= additive_expr { ('&' | '|' | '^') additive_expr } */
+/* bitwise_expr ::= additive_expr { ('&' | '|' | '^' | '||') additive_expr }
+   The SQL-standard concatenation operator shares this tier (below additive):
+   `a || b + c` is a || (b + c). */
 static ExprNode* parse_bitwise_expr(Parser *parser) {
     ExprNode *expr = parse_additive_expr(parser);
 
-    while (match(parser, TOKEN_AMPERSAND) || match(parser, TOKEN_PIPE) || match(parser, TOKEN_CARET)) {
+    while (match(parser, TOKEN_AMPERSAND) || match(parser, TOKEN_PIPE) ||
+           match(parser, TOKEN_CARET) || match(parser, TOKEN_CONCAT)) {
         TokenType op = parser->previous.type;
         ExprNode *right = parse_additive_expr(parser);
         ExprType type;
         if (op == TOKEN_AMPERSAND) type = EXPR_BIT_AND;
         else if (op == TOKEN_PIPE) type = EXPR_BIT_OR;
-        else type = EXPR_BIT_XOR;
+        else if (op == TOKEN_CARET) type = EXPR_BIT_XOR;
+        else type = EXPR_CONCAT;
         expr = make_binary(parser, type, expr, right);
     }
     return expr;

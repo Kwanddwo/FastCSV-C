@@ -160,6 +160,10 @@ no tuning, no environment variables.
   preserved for display (`SELECT '007'` prints `007`; `LENGTH('007')` is 3),
   while computations use the numeric value (`'007' + 0` is `7`). Typing only
   happens when a computation actually needs a value.
+- **`||` concatenation** (SQL standard): `a || b` concatenates the raw text
+  of both operands; a NULL operand makes the result NULL (`'x' || NULL` is
+  NULL), unlike the lenient `CONCAT()` function which skips NULLs. It binds
+  with the bitwise operators (below `+ -`).
 - **Functions**: scalar `UPPER/UCASE`, `LOWER/LCASE`, `LENGTH`/`CHAR_LENGTH`/
   `CHARACTER_LENGTH`, `TRIM`, `SUBSTR`/`SUBSTRING`, `CONCAT`, `COALESCE`/
   `IFNULL`, `POSITION(sub IN str)`, `ABS`, `ROUND`, `FLOOR`, `CEIL`/`CEILING`,

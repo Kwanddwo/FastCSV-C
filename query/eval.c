@@ -610,6 +610,27 @@ static EvalResult eval_function(const char *name, ExprNode **args, int arg_count
 
 typedef enum { BIT_AND, BIT_OR, BIT_XOR } BitwiseOp;
 
+static EvalResult eval_concat(ExprNode *node, EvalCtx *ctx) {
+    EvalResult l = eval_expr(node->left, ctx);
+    if (eval_result_is_error(&l)) return l;
+    EvalResult r = eval_expr(node->right, ctx);
+    if (eval_result_is_error(&r)) return r;
+    /* Standard || semantics: any NULL operand yields NULL. (The lenient
+       CONCAT() function, which skips NULLs, is the explicit exception.) */
+    if (l.is_null || r.is_null) return eval_result_null();
+    const char *ls = eval_result_to_string(&l, ctx->tmp);
+    const char *rs = eval_result_to_string(&r, ctx->tmp);
+    size_t ll = strlen(ls);
+    size_t rl = strlen(rs);
+    char *res;
+    QArenaResult ar = qarena_alloc(ctx->tmp, ll + rl + 1, (void**)&res);
+    if (ar != QARENA_OK) return eval_result_null();
+    memcpy(res, ls, ll);
+    memcpy(res + ll, rs, rl);
+    res[ll + rl] = '\0';
+    return eval_result_str(res);
+}
+
 static EvalResult eval_bitwise(ExprNode *left, ExprNode *right, EvalCtx *ctx,
                                BitwiseOp op) {
     EvalResult l = eval_expr(left, ctx);
@@ -864,6 +885,7 @@ EvalResult eval_expr(ExprNode *node, EvalCtx *ctx) {
         case EXPR_BIT_AND: return eval_bitwise(node->left, node->right, ctx, BIT_AND);
         case EXPR_BIT_OR:  return eval_bitwise(node->left, node->right, ctx, BIT_OR);
         case EXPR_BIT_XOR: return eval_bitwise(node->left, node->right, ctx, BIT_XOR);
+        case EXPR_CONCAT:  return eval_concat(node, ctx);
 
         /* ===== Comparison ===== */
         case EXPR_EQ:  return eval_cmp(node, ctx, CMP_EQ);

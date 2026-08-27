@@ -918,6 +918,26 @@ static void test_typing_uniformity(void) {
     test_query("SELECT 1 FROM 'query/data/nulls.csv' WHERE name = 'Alice'", 1);
 }
 
+/* The SQL-standard || concatenation operator (was: lexed as two pipes → parse
+   error). Uses raw text on both sides, propagates NULL, binds with the
+   bitwise tier below additive. */
+static void test_concat_operator(void) {
+    printf("--- || concatenation operator\n");
+
+    test_query_value("SELECT 'a' || 'b' FROM 'query/data/students.csv' LIMIT 1", "ab");
+    test_query_value("SELECT '007' || 'x' FROM 'query/data/students.csv' LIMIT 1", "007x");
+    test_query_value("SELECT name || city FROM 'query/data/students.csv' LIMIT 1", "AliceNYC");
+    test_query_value("SELECT val || '!' FROM 'query/data/distinct.csv' WHERE id = 7", "05!");
+    /* Precedence: || is on the bitwise tier, so additive binds tighter. */
+    test_query_value("SELECT 1 || 2 + 3 FROM 'query/data/students.csv' LIMIT 1", "15");
+    test_query_value("SELECT (1 + 2) || 3 FROM 'query/data/students.csv' LIMIT 1", "33");
+    /* NULL propagates (standard); the empty cell is NULL, not ''. */
+    test_query_value("SELECT COUNT(*) FROM 'query/data/nulls.csv' WHERE name || 'x' IS NULL", "1");
+    /* Bitwise | is unaffected. */
+    test_query_value("SELECT 6 | 3 FROM 'query/data/students.csv' LIMIT 1", "7");
+    test_query_value("SELECT 6 || 3 FROM 'query/data/students.csv' LIMIT 1", "63");
+}
+
 /* RANDOM() must be volatile: one value per row (never constant-folded to a
    single statement value), and each process launch must see a fresh random
    sequence (the old code used unseeded rand(), so every run started at
@@ -1219,6 +1239,7 @@ int main(void) {
     test_large_expression();
     test_too_deep_expression();
     test_typing_uniformity();
+    test_concat_operator();
     test_random_function();
     test_repl_splitter();
     test_parse_oom();

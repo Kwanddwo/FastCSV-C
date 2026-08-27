@@ -67,6 +67,7 @@ typedef enum {
     TOKEN_AMPERSAND,
     TOKEN_PIPE,
     TOKEN_CARET,
+    TOKEN_CONCAT,
 
     /* Punctuation */
     TOKEN_LPAREN,

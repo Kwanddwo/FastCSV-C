@@ -31,6 +31,9 @@ typedef enum {
     EXPR_BIT_OR,
     EXPR_BIT_XOR,
 
+    /* String concatenation (SQL-standard ||) */
+    EXPR_CONCAT,
+
     /* Comparison */
     EXPR_EQ,
     EXPR_NE,
