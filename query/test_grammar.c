@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/resource.h>
 #include "../arena.h"
 #include "../csv_config.h"
 #include "../csv_reader.h"
@@ -861,6 +864,128 @@ static void test_large_expression(void) {
     test_query_value(sql, "401");
 }
 
+/* Deep expression trees exceed the parse-time depth bound (MAX_EXPR_DEPTH):
+   they must fail with a clean error, not crash the recursive folding and
+   evaluation walkers with a stack overflow. */
+static void test_too_deep_expression(void) {
+    printf("--- deep expression (depth limit)\n");
+
+    static char sql[4096];
+    strcpy(sql, "SELECT 1");
+    for (int i = 0; i < 1500; i++) strcat(sql, "+1");
+    strcat(sql, " FROM 'query/data/students.csv'");
+    test_query_error(sql, "too large");
+}
+
+/* Valgrind does not reliably set RUNNING_ON_VALGRIND; detect its preload
+   library the way tools like glibc's malloca test do. */
+static bool under_valgrind(void) {
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (f == NULL) return false;
+    char line[4096];
+    bool found = false;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (strstr(line, "vgpreload") != NULL) { found = true; break; }
+    }
+    fclose(f);
+    return found;
+}
+
+/* Regression: parse-time memory exhaustion must abort the statement with
+   exactly "Out of memory." — never a crash, and never a misleading runtime
+   or syntax error produced from a partially built statement (the old code
+   could return a broken non-NULL statement, e.g. with a NULL table name, or
+   SIGSEGV inside strtod). Runs in a forked child under several address-space
+   caps (the first cap that forces an OOM decides; the message is checked in
+   every case). A child killed by a signal fails the test. */
+static void test_parse_oom(void) {
+    printf("--- parse OOM (clean failure, no crash)\n");
+
+    /* The forked child exhausts the address space, which valgrind's own
+       address-space manager cannot simulate: skip under valgrind. */
+    if (under_valgrind()) {
+        printf("     (skipped under valgrind)\n");
+        pass++;
+        return;
+    }
+
+    fflush(stdout);
+    int pfd[2];
+    if (pipe(pfd) != 0) { printf("FAIL: pipe\n"); fail++; return; }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pfd[0]);
+
+        /* A wide but shallow IN list (40k literals, AST depth 2) makes the
+           parse arena grow without ever hitting the depth-bound error, so
+           the caps exercise the true parse-time OOM path. */
+        size_t sql_len = 48 + (size_t)40000 * 2 + 64;
+        char *sql = malloc(sql_len);
+        if (sql == NULL) _exit(4);
+        strcpy(sql, "SELECT 1 FROM 'query/data/students.csv' WHERE 1 IN (1");
+        for (int i = 0; i < 40000; i++) strcat(sql, ",1");
+        strcat(sql, ")");
+
+        const int caps_kb[] = { 12000, 10000, 8000, 6000 };
+        bool any_error = false;
+        for (size_t c = 0; c < sizeof(caps_kb) / sizeof(caps_kb[0]); c++) {
+            struct rlimit lim;
+            lim.rlim_cur = (rlim_t)caps_kb[c] * 1024;
+            lim.rlim_max = (rlim_t)caps_kb[c] * 1024;
+            if (setrlimit(RLIMIT_AS, &lim) != 0) continue;
+
+            Arena ca;
+            if (arena_create(&ca, 2 * 1024) != ARENA_OK) continue;
+            CSVConfig *cfg = csv_config_create(&ca);
+            csv_config_set_has_header(cfg, 1);
+            QueryResult res = query_execute(cfg, sql);
+            arena_destroy(&ca);
+            if (res.error) {
+                any_error = true;
+                if (strcmp(res.error, "Out of memory.") == 0) {
+                    query_result_destroy(&res);
+                    write(pfd[1], "OOM-OK\n", 7);
+                    free(sql);
+                    _exit(0);
+                }
+                query_result_destroy(&res);
+                continue; /* a lower cap should hit parse-time OOM */
+            }
+            query_result_destroy(&res);
+        }
+        free(sql);
+        if (!any_error)
+            write(pfd[1], "NO-OOM\n", 7); /* caps never bit; nothing to assert */
+        else
+            write(pfd[1], "NOT-OOM\n", 8);
+        _exit(0);
+    } else if (pid > 0) {
+        close(pfd[1]);
+        char msg[256];
+        ssize_t n = read(pfd[0], msg, sizeof(msg) - 1);
+        if (n < 0) n = 0;
+        msg[n] = '\0';
+        close(pfd[0]);
+
+        int st = 0;
+        waitpid(pid, &st, 0);
+        if (!WIFSIGNALED(st) &&
+            (strcmp(msg, "OOM-OK\n") == 0 || strcmp(msg, "NO-OOM\n") == 0)) {
+            pass++;
+        } else {
+            fail++;
+            printf("FAIL: parse OOM -> %s", WIFSIGNALED(st) ? "child crashed (signal)\n"
+                                                             : (strcmp(msg, "NOT-OOM\n") == 0
+                                                                ? "non-OOM error under memory pressure\n"
+                                                                : msg));
+        }
+    } else {
+        printf("FAIL: fork\n");
+        fail++;
+    }
+}
+
 /* =================================================================
  * main
  * ================================================================= */
@@ -907,6 +1032,8 @@ int main(void) {
     test_error_recovery();
     test_comments();
     test_large_expression();
+    test_too_deep_expression();
+    test_parse_oom();
 
     printf("\n=== Results ===\n");
     printf("PASS: %d   FAIL: %d   TOTAL: %d\n", pass, fail, pass + fail);

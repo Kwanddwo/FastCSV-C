@@ -92,7 +92,16 @@ QueryResult query_execute(CSVConfig *config, const char *sql) {
         return result;
     }
 
-    SelectStmt *stmt = parse_select(sql, &parse_arena, parse_errors);
+    bool oom = false;
+    SelectStmt *stmt = parse_select(sql, &parse_arena, parse_errors, &oom);
+    if (oom) {
+        /* The parse aborted on memory exhaustion. Surface the root cause
+           deterministically: a partially built (possibly non-NULL) statement
+           must not be mistaken for a success or a syntax error. */
+        result.error = "Out of memory.";
+        qarena_destroy(&parse_arena);
+        return result;
+    }
     if (stmt == NULL || parse_errors->count > 0) {
         if (parse_errors->count > 0) {
             if (qarena_create(&result.result_arena, QUERY_RESULT_ARENA_INIT) != QARENA_OK) {
@@ -108,6 +117,10 @@ QueryResult query_execute(CSVConfig *config, const char *sql) {
             } else {
                 result.error = "Out of memory.";
             }
+        } else {
+            /* No statement and no recorded errors (should not happen now that
+               OOM is tracked explicitly; stay defensive). */
+            result.error = "Failed to parse statement.";
         }
         qarena_destroy(&parse_arena);
         return result;

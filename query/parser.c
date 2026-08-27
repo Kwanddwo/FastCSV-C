@@ -12,6 +12,12 @@
 
 #define MAX_PARSE_ERRORS 50
 
+/* Maximum expression tree depth (node count). Deep trees (e.g. a chain of
+   20000 additions) crash the recursive folding/evaluation walkers with a
+   stack overflow, so the limit is enforced at parse time, like SQLite's
+   "Expression tree is too large (max depth 1000)". */
+#define MAX_EXPR_DEPTH 1000
+
 /* ===== Init ===== */
 Parser parser_init(const char *source, QArena *arena, ParseErrorList *errors) {
     Parser parser;
@@ -25,8 +31,7 @@ Parser parser_init(const char *source, QArena *arena, ParseErrorList *errors) {
     parser.errors = errors;
     parser.arena = arena;
     parser.source = source;
-    memset(&parser.oom_node, 0, sizeof(parser.oom_node));
-    parser.oom_node.type = EXPR_LITERAL_NULL;
+    parser.oom = false;
     return parser;
 }
 
@@ -67,19 +72,19 @@ void record_error(Parser *parser, const char *msg, int line, int col) {
             parser->arena, list->errors,
             sizeof(const char*) * (size_t)list->capacity,
             sizeof(const char*) * (size_t)new_cap);
-        if (new_errors == NULL) return;
+        if (new_errors == NULL) { parser->oom = true; return; }
 
         int *new_lines = (int*)qarena_realloc(
             parser->arena, list->error_lines,
             sizeof(int) * (size_t)list->capacity,
             sizeof(int) * (size_t)new_cap);
-        if (new_lines == NULL) return;
+        if (new_lines == NULL) { parser->oom = true; return; }
 
         int *new_cols = (int*)qarena_realloc(
             parser->arena, list->error_columns,
             sizeof(int) * (size_t)list->capacity,
             sizeof(int) * (size_t)new_cap);
-        if (new_cols == NULL) return;
+        if (new_cols == NULL) { parser->oom = true; return; }
 
         /* Commit only after every array grew, keeping capacity and the
            parallel arrays consistent on partial failure. */
@@ -90,15 +95,30 @@ void record_error(Parser *parser, const char *msg, int line, int col) {
     }
 
     const char *stored = qarena_strdup(parser->arena, msg);
-    if (stored == NULL) stored = "Out of memory.";
+    if (stored == NULL) {
+        parser->oom = true;
+        stored = "Out of memory.";
+    }
     list->errors[list->count] = stored;
     list->error_lines[list->count] = line;
     list->error_columns[list->count] = col;
     list->count++;
 }
 
+/* Set the hard stop flag and record the root cause. The parse may still
+   unwind through partially built structures, but none of them can reach
+   execution: parse_select returns NULL whenever the flag is set. */
+void parser_oom(Parser *parser, int line, int col) {
+    parser->oom = true;
+    record_error(parser, "Out of memory.", line, col);
+}
+
 /* ===== Token helpers ===== */
 void advance(Parser *parser) {
+    /* Fail-stop: after an OOM, freeze the token stream; match() returning
+       false unwinds every parse loop. */
+    if (parser->oom) return;
+
     parser->previous = parser->current;
 
     for (;;) {
@@ -118,12 +138,15 @@ bool check(Parser *parser, TokenType type) {
 }
 
 bool match(Parser *parser, TokenType type) {
+    if (parser->oom) return false;
     if (!check(parser, type)) return false;
     advance(parser);
     return true;
 }
 
 void consume(Parser *parser, TokenType type, const char *message) {
+    if (parser->oom) return;
+
     if (parser->current.type == type) {
         advance(parser);
         return;
@@ -188,7 +211,7 @@ char* copy_lexeme(Parser *parser, const char *lexeme, int length) {
     if (length < 0) length = 0;
     void *mem;
     QArenaResult ar = qarena_alloc(parser->arena, (size_t)length + 1, &mem);
-    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
     char *str = (char*)mem;
     memcpy(str, lexeme, (size_t)length);
     str[length] = '\0';
@@ -201,7 +224,7 @@ char* copy_string_literal(Parser *parser, const char *start, int length) {
     if (content_length < 0) content_length = 0;
     void *mem;
     QArenaResult ar = qarena_alloc(parser->arena, (size_t)content_length + 1, &mem);
-    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
     char *str = (char*)mem;
     /* Copy the text between the surrounding quotes, collapsing '' into '. */
     int out = 0;
@@ -222,7 +245,7 @@ char* qarena_concat(Parser *parser, const char *a, const char *b) {
     size_t blen = strlen(b);
     void *mem;
     QArenaResult ar = qarena_alloc(parser->arena, alen + blen + 1, &mem);
-    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
     char *str = (char*)mem;
     memcpy(str, a, alen);
     memcpy(str + alen, b, blen);
@@ -235,10 +258,10 @@ ExprNode* alloc_expr_node(Parser *parser) {
     void *mem;
     QArenaResult ar = qarena_alloc(parser->arena, sizeof(ExprNode), &mem);
     if (ar != QARENA_OK) {
-        /* Fall back to a shared sentinel. Any recorded error prevents
-           execution, so the placeholder tree is never evaluated. */
-        record_error(parser, "Out of memory.", parser->current.line, parser->current.column);
-        return &parser->oom_node;
+        /* Stop the parse: callers receive NULL and the fail-stop gates in
+           advance/match/consume halt the recursion. */
+        parser_oom(parser, parser->current.line, parser->current.column);
+        return NULL;
     }
     ExprNode *node = (ExprNode*)mem;
     node->type = EXPR_LITERAL_NULL;
@@ -275,7 +298,7 @@ static bool ensure_capacity(Parser *parser, void **array, int *capacity,
     void *mem = qarena_realloc(parser->arena, *array,
                               elem_size * (size_t)*capacity,
                               elem_size * (size_t)new_cap);
-    if (mem == NULL) { error_at_current(parser, "Out of memory."); return false; }
+    if (mem == NULL) { parser_oom(parser, parser->current.line, parser->current.column); return false; }
     *array = mem;
     *capacity = new_cap;
     return true;
@@ -290,6 +313,7 @@ static bool ensure_capacity(Parser *parser, void **array, int *capacity,
    Anything else is returned unchanged (validated as a column or constant
    later). A whole-number literal outside the select list is an error. */
 static ExprNode* resolve_select_ref(Parser *parser, SelectStmt *stmt, ExprNode *node) {
+    if (parser->oom || node == NULL) return NULL;
     if (node->type == EXPR_LITERAL_NUMBER) {
         double v = node->num_value;
         if (v >= -1e9 && v <= 1e9 && v == (double)(int)v) {
@@ -298,7 +322,8 @@ static ExprNode* resolve_select_ref(Parser *parser, SelectStmt *stmt, ExprNode *
                 char buf[64];
                 snprintf(buf, sizeof(buf), "SELECT position %d is not in the select list.", pos);
                 record_error(parser, buf, parser->previous.line, parser->previous.column);
-            } else if (stmt->items[pos - 1].expr->type != EXPR_STAR) {
+            } else if (stmt->items[pos - 1].expr != NULL &&
+                       stmt->items[pos - 1].expr->type != EXPR_STAR) {
                 return stmt->items[pos - 1].expr;
             }
             /* A valid position holding '*' is left as a constant key: the
@@ -306,7 +331,8 @@ static ExprNode* resolve_select_ref(Parser *parser, SelectStmt *stmt, ExprNode *
         }
     } else if (node->type == EXPR_COLUMN_REF && node->str_value != NULL) {
         for (int i = 0; i < stmt->item_count; i++) {
-            if (stmt->items[i].expr->type == EXPR_STAR) continue;
+            if (stmt->items[i].expr == NULL || stmt->items[i].expr->type == EXPR_STAR)
+                continue;
             if (stmt->items[i].name != NULL &&
                 str_ieq(stmt->items[i].name, node->str_value)) {
                 return stmt->items[i].expr;
@@ -466,7 +492,7 @@ static SelectItem* parse_select_list(Parser *parser, int *out_count) {
             alias = copy_lexeme(parser, bare.lexeme, bare.length);
         }
         
-        if (expr->type == EXPR_STAR && alias != NULL) {
+        if (expr != NULL && expr->type == EXPR_STAR && alias != NULL) {
             record_error(
                 parser, 
                 "Alias is not allowed on '*'.",
@@ -479,9 +505,9 @@ static SelectItem* parse_select_list(Parser *parser, int *out_count) {
         char *name;
         if (alias) {
             name = alias;
-        } else if (expr->type == EXPR_COLUMN_REF) {
+        } else if (expr != NULL && expr->type == EXPR_COLUMN_REF) {
             name = expr->str_value;
-        } else if (expr->type == EXPR_STAR) {
+        } else if (expr != NULL && expr->type == EXPR_STAR) {
             name = NULL;  /* expanded in executor */
         } else {
             name = source_text;
@@ -536,7 +562,7 @@ SelectStmt* parse_select_query(Parser *parser) {
 
     void *mem;
     QArenaResult ar = qarena_alloc(parser->arena, sizeof(SelectStmt), &mem);
-    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
     SelectStmt *stmt = select_stmt_init(mem, distinct);
 
     stmt->items = parse_select_list(parser, &stmt->item_count);
@@ -578,13 +604,94 @@ SelectStmt* parse_select_query(Parser *parser) {
     return stmt;
 }
 
+/* ===== Expression size bound ===== */
+
+/* Children of an expression node, accessed by index so the IN-list argument
+   array (arbitrarily wide) never needs materialization; the depth search's
+   explicit stack therefore stays O(tree depth). */
+static const ExprNode* node_child_at(const ExprNode *n, int i) {
+    if (n->left) { if (i == 0) return n->left; i--; }
+    if (n->right) { if (i == 0) return n->right; i--; }
+    if (n->mid) { if (i == 0) return n->mid; i--; }
+    if (i < n->arg_count) return n->args[i];
+    i -= n->arg_count;
+    for (const CaseWhen *cw = n->case_whens; cw; cw = cw->next) {
+        if (i == 0) return cw->condition;
+        if (i == 1) return cw->result;
+        i -= 2;
+    }
+    if (n->case_else) { if (i == 0) return n->case_else; }
+    return NULL;
+}
+
+typedef struct {
+    const ExprNode *node;
+    int child_idx;
+} DepthResume;
+
+/* Iterative DFS (explicit resume stack, bounded by the depth limit itself):
+   returns true when the expression's longest root-to-leaf path exceeds
+   MAX_EXPR_DEPTH. Never recurses, so deep trees cannot smash the call stack. */
+static bool expr_depth_exceeded(const ExprNode *root) {
+    if (root == NULL) return false;
+
+    DepthResume stack[MAX_EXPR_DEPTH + 2];
+    int sp = 0;
+    stack[sp++] = (DepthResume){ root, 0 };
+    while (sp > 0) {
+        DepthResume *f = &stack[sp - 1];
+        const ExprNode *child = node_child_at(f->node, f->child_idx);
+        if (child != NULL) {
+            f->child_idx++;
+            if (sp == MAX_EXPR_DEPTH) return true; /* pushing would exceed */
+            stack[sp++] = (DepthResume){ child, 0 };
+        } else {
+            sp--;
+        }
+    }
+    return false;
+}
+
+static bool stmt_expr_too_deep(const SelectStmt *stmt) {
+    if (stmt == NULL) return false;
+    for (int i = 0; i < stmt->item_count; i++) {
+        if (expr_depth_exceeded(stmt->items[i].expr)) return true;
+    }
+    if (expr_depth_exceeded(stmt->where)) return true;
+    for (int j = 0; j < stmt->group_by_count; j++) {
+        if (expr_depth_exceeded(stmt->group_by[j])) return true;
+    }
+    if (expr_depth_exceeded(stmt->having)) return true;
+    for (int j = 0; j < stmt->order_by_count; j++) {
+        if (expr_depth_exceeded(stmt->order_by[j].expr)) return true;
+    }
+    return false;
+}
+
 /* ===== Public API ===== */
-SelectStmt* parse_select(const char *source, QArena *arena, ParseErrorList *errors) {
+SelectStmt* parse_select(const char *source, QArena *arena, ParseErrorList *errors,
+                         bool *out_oom) {
     Parser parser = parser_init(source, arena, errors);
+    if (out_oom) *out_oom = false;
 
     advance(&parser);
 
     SelectStmt *stmt = parse_select_query(&parser);
+
+    /* An OOM must abort with no statement: the partially built tree is
+       mutated by placeholder nodes and must never reach the executor. */
+    if (parser.oom) {
+        if (out_oom) *out_oom = true;
+        return NULL;
+    }
+
+    /* Reject expressions beyond the depth bound before any recursive walker
+       (folding, validation, evaluation) can overflow the call stack. The
+       recorded error blocks execution via parse_errors. */
+    if (stmt != NULL && stmt_expr_too_deep(stmt)) {
+        record_error(&parser, "Expression is too large (max depth 1000).",
+                     parser.current.line, parser.current.column);
+    }
 
     if (!check(&parser, TOKEN_EOF)) {
         error_at_current(&parser, "Unexpected token after SELECT statement.");

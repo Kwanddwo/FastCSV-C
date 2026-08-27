@@ -5,6 +5,7 @@
 #include "ast.h"
 #include "parser.h"
 #include "scanner.h"
+#include <stdbool.h>
 
 /* Initial capacity for growable arrays (error list, expression lists);
    doubled on demand. */
@@ -18,10 +19,10 @@ typedef struct {
     ParseErrorList *errors;
     QArena *arena;
     const char *source;
-    /* Non-NULL fallback node returned when arena allocation fails. Sharing a
-       single node is safe because parse errors abort execution before any
-       tree is evaluated. */
-    ExprNode oom_node;
+    /* Hard stop flag: set on any arena allocation failure. While set, token
+       helpers stop consuming and parse entry points unwind with NULL, so no
+       broken subtree can escape into the executor. */
+    bool oom;
 } Parser;
 
 /* ===== Init ===== */
@@ -35,6 +36,10 @@ void consume(Parser *parser, TokenType type, const char *message);
 void error_at_current(Parser *parser, const char *message);
 void record_error(Parser *parser, const char *msg, int line, int col);
 void sync_after_error(Parser *parser);
+
+/* ===== OOM handling (parser.c) ===== */
+/* Record "Out of memory." and stop the parse. */
+void parser_oom(Parser *parser, int line, int col);
 
 /* ===== QArena string helpers (parser.c) ===== */
 char* copy_lexeme(Parser *parser, const char *lexeme, int length);

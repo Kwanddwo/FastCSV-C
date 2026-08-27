@@ -102,7 +102,7 @@ ExprNode** parse_expr_list(Parser *parser, int *out_count, const char *item_msg)
     int capacity = LIST_INITIAL_CAPACITY;
     void *mem;
     QArenaResult ar = qarena_alloc(parser->arena, sizeof(ExprNode*) * (size_t)capacity, &mem);
-    if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return NULL; }
+    if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
     ExprNode **items = (ExprNode**)mem;
     int count = 0;
 
@@ -112,10 +112,13 @@ ExprNode** parse_expr_list(Parser *parser, int *out_count, const char *item_msg)
             mem = qarena_realloc(parser->arena, items,
                                 sizeof(ExprNode*) * (size_t)(capacity / 2),
                                 sizeof(ExprNode*) * (size_t)capacity);
-            if (mem == NULL) { error_at_current(parser, "Out of memory."); return NULL; }
+            if (mem == NULL) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
             items = (ExprNode**)mem;
         }
         items[count++] = parse_expression(parser);
+        /* Fail-stop: under OOM the token helpers stop consuming, so this loop
+           must break explicitly or it would spin on a frozen token. */
+        if (parser->oom) break;
         if (match(parser, TOKEN_RPAREN)) break;
         consume(parser, TOKEN_COMMA, item_msg);
     }
@@ -126,6 +129,7 @@ ExprNode** parse_expr_list(Parser *parser, int *out_count, const char *item_msg)
 
 static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
     ExprNode *node = alloc_expr_node(parser);
+    if (node == NULL) return NULL;
     node->type = EXPR_FUNCTION_CALL;
     node->str_value = qarena_strdup(parser->arena, func_name);
     node->distinct = match(parser, TOKEN_DISTINCT);
@@ -141,7 +145,7 @@ static ExprNode* parse_function_args(Parser *parser, const char *func_name) {
     if (str_ieq(func_name, "POSITION")) {
         void *mem;
         QArenaResult ar = qarena_alloc(parser->arena, sizeof(ExprNode*) * 2, &mem);
-        if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return node; }
+        if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return node; }
         ExprNode **args = (ExprNode**)mem;
         args[0] = parse_expression(parser);
         consume(parser, TOKEN_IN, "Expected 'IN' in POSITION(substring IN string).");
@@ -175,6 +179,7 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
             SelectStmt *subq = parse_select_query(parser);
             consume(parser, TOKEN_RPAREN, "Expected ')' after subquery.");
             ExprNode *node = alloc_expr_node(parser);
+            if (node == NULL) return NULL;
             node->type = EXPR_SUBQUERY;
             node->subquery = subq;
             return node;
@@ -222,14 +227,11 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
     /* Number literal */
     if (match(parser, TOKEN_NUMBER)) {
         ExprNode *node = make_leaf(parser, EXPR_LITERAL_NUMBER);
+        if (node == NULL) return NULL;
         node->str_value = copy_lexeme(parser, parser->previous.lexeme, parser->previous.length);
-        /* A NULL lexeme here means the arena ran out of memory; the recorded
-           error prevents execution, so bail out instead of crashing strtod. */
-        if (node->str_value == NULL) {
-            record_error(parser, "Out of memory.", parser->current.line,
-                         parser->current.column);
-            return &parser->oom_node;
-        }
+        /* A NULL lexeme means the arena ran out of memory; copy_lexeme already
+           flagged the parse and strtod must not see the NULL string. */
+        if (node->str_value == NULL) return NULL;
         node->num_value = strtod(node->str_value, NULL);
         return node;
     }
@@ -244,6 +246,7 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
         TokenType kw = parser->current.type;
         advance(parser);
         ExprNode *node = make_leaf(parser, EXPR_DATETIME_VALUE);
+        if (node == NULL) return NULL;
         switch (kw) {
             case TOKEN_CURRENT_DATE: node->num_value = DT_CURRENT_DATE; break;
             case TOKEN_CURRENT_TIME: node->num_value = DT_CURRENT_TIME; break;
@@ -273,6 +276,7 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
                          parser->previous.line, parser->previous.column);
         }
         ExprNode *node = make_leaf(parser, EXPR_DATE_LITERAL);
+        if (node == NULL) return NULL;
         node->str_value = str;
         return node;
     }
@@ -298,6 +302,7 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
         ExprNode *value = parse_expression(parser);
         consume(parser, TOKEN_RPAREN, "Expected ')' after EXTRACT.");
         ExprNode *node = make_leaf(parser, EXPR_EXTRACT);
+        if (node == NULL) return NULL;
         node->str_value = field;
         node->left = value;
         return node;
@@ -320,12 +325,14 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
             char *qualified = qarena_concat(parser, name, ".");
             char *full = qarena_concat(parser, qualified, col);
             ExprNode *node = make_leaf(parser, EXPR_COLUMN_REF);
+            if (node == NULL) return NULL;
             node->str_value = full;
             return node;
         }
 
         /* Simple column reference */
         ExprNode *node = make_leaf(parser, EXPR_COLUMN_REF);
+        if (node == NULL) return NULL;
         node->str_value = name;
         return node;
     }
@@ -337,6 +344,7 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
 /* ===== CASE expression ===== */
 static ExprNode* parse_case_expression(Parser *parser) {
     ExprNode *node = alloc_expr_node(parser);
+    if (node == NULL) return NULL;
     node->type = EXPR_CASE;
 
     /* If next token is not WHEN, it's a simple CASE: CASE expr WHEN ... */
@@ -352,7 +360,7 @@ static ExprNode* parse_case_expression(Parser *parser) {
     do {
         CaseWhen *cw;
         QArenaResult ar = qarena_alloc(parser->arena, sizeof(CaseWhen), (void**)&cw);
-        if (ar != QARENA_OK) { error_at_current(parser, "Out of memory."); return make_error_node(parser, "Out of memory."); }
+        if (ar != QARENA_OK) { parser_oom(parser, parser->current.line, parser->current.column); return NULL; }
         cw->condition = NULL;
         cw->result = NULL;
         cw->next = NULL;
@@ -472,6 +480,7 @@ static ExprNode* parse_primary_condition(Parser *parser) {
             consume(parser, TOKEN_LPAREN, "Expected '(' after 'NOT IN'.");
 
             ExprNode *node = alloc_expr_node(parser);
+            if (node == NULL) return NULL;
             node->type = EXPR_NOT_IN;
             node->left = expr;
 
@@ -494,6 +503,7 @@ static ExprNode* parse_primary_condition(Parser *parser) {
         consume(parser, TOKEN_LPAREN, "Expected '(' after 'IN'.");
 
         ExprNode *node = alloc_expr_node(parser);
+        if (node == NULL) return NULL;
         node->type = EXPR_IN;
         node->left = expr;
 
@@ -514,6 +524,7 @@ static ExprNode* parse_primary_condition(Parser *parser) {
         ExprNode *end = parse_expression(parser);
 
         ExprNode *node = alloc_expr_node(parser);
+        if (node == NULL) return NULL;
         node->type = EXPR_BETWEEN;
         node->left = expr;
         node->right = start;
@@ -538,6 +549,7 @@ static ExprNode* parse_primary_condition(Parser *parser) {
         bool negate = match(parser, TOKEN_NOT);
         consume(parser, TOKEN_NULL, "Expected 'NULL' after 'IS'.");
         ExprNode *node = alloc_expr_node(parser);
+        if (node == NULL) return NULL;
         node->type = negate ? EXPR_IS_NOT_NULL : EXPR_IS_NULL;
         node->left = expr;
         return node;
