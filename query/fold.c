@@ -1,7 +1,7 @@
 /* Constant folding: evaluates constant subtrees once, after parsing, and
  * replaces them with literal nodes so the per-row evaluation path never
  * re-computes them. Folding is semantics-preserving: only subtrees free of
- * column refs, aggregates, '*' and subqueries are touched (expr_is_constant),
+ * column refs, aggregates and '*' are touched (expr_is_constant),
  * and a subtree whose evaluation errors is left in place. */
 #include "fold.h"
 #include "eval.h"
@@ -24,7 +24,6 @@ static ExprNode* alloc_literal_node(QArena *arena, const EvalResult *v) {
     node->distinct = false;
     node->case_whens = NULL;
     node->case_else = NULL;
-    node->subquery = NULL;
 
     if (v->is_null) {
         node->type = EXPR_LITERAL_NULL;

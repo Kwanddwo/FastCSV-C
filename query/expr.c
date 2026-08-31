@@ -195,25 +195,22 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
         return make_unary(parser, EXPR_UNARY_MINUS, operand);
     }
 
-    /* (expression) or (subquery): parenthesized content is parsed with the
-       full search-condition grammar (so both a bare arithmetic primary and
-       a predicate like `(a > 1 AND b < 2)` work), and returned as a primary
+    /* (expression): parenthesized content is parsed with the full
+       search-condition grammar (so both a bare arithmetic primary and a
+       predicate like `(a > 1 AND b < 2)` work), and returned as a primary
        so a following operator (e.g. `(a + b) * c`) continues correctly. */
     if (match(parser, TOKEN_LPAREN)) {
         if (check(parser, TOKEN_SELECT)) {
-            /* Scalar subquery */
-            SelectStmt *subq = parse_select_query(parser);
-            consume(parser, TOKEN_RPAREN, "Expected ')' after subquery.");
-            ExprNode *node = alloc_expr_node(parser);
-            if (node == NULL) return NULL;
-            node->type = EXPR_SUBQUERY;
-            node->subquery = subq;
-            return node;
-        } else {
-            ExprNode *expr = parse_search_condition(parser);
+            /* Scalar subqueries are not supported. */
+            record_error(parser, "Subqueries are not supported.",
+                         parser->current.line, parser->current.column);
+            sync_after_error(parser);
             consume(parser, TOKEN_RPAREN, "Expected ')' after expression.");
-            return expr;
+            return NULL;
         }
+        ExprNode *expr = parse_search_condition(parser);
+        consume(parser, TOKEN_RPAREN, "Expected ')' after expression.");
+        return expr;
     }
 
     /* CASE expression */
@@ -515,8 +512,12 @@ static ExprNode* parse_primary_condition(Parser *parser) {
             node->left = expr;
 
             if (check(parser, TOKEN_SELECT)) {
-                node->subquery = parse_select_query(parser);
-                consume(parser, TOKEN_RPAREN, "Expected ')' after subquery.");
+                /* IN (subquery) is not supported. */
+                record_error(parser, "Subqueries are not supported.",
+                             parser->current.line, parser->current.column);
+                sync_after_error(parser);
+                consume(parser, TOKEN_RPAREN, "Expected ')' after IN list.");
+                node->arg_count = 0;
             } else {
                 node->args = parse_expr_list(parser, &node->arg_count,
                                              "Expected ',' or ')' after IN list item.");
@@ -533,19 +534,23 @@ static ExprNode* parse_primary_condition(Parser *parser) {
         consume(parser, TOKEN_LPAREN, "Expected '(' after 'IN'.");
 
         ExprNode *node = alloc_expr_node(parser);
-        if (node == NULL) return NULL;
-        node->type = EXPR_IN;
-        node->left = expr;
+            if (node == NULL) return NULL;
+            node->type = EXPR_IN;
+            node->left = expr;
 
-        if (check(parser, TOKEN_SELECT)) {
-            node->subquery = parse_select_query(parser);
-            consume(parser, TOKEN_RPAREN, "Expected ')' after subquery.");
-        } else {
-            node->args = parse_expr_list(parser, &node->arg_count,
-                                         "Expected ',' or ')' after IN list item.");
+            if (check(parser, TOKEN_SELECT)) {
+                /* IN (subquery) is not supported. */
+                record_error(parser, "Subqueries are not supported.",
+                             parser->current.line, parser->current.column);
+                sync_after_error(parser);
+                consume(parser, TOKEN_RPAREN, "Expected ')' after IN list.");
+                node->arg_count = 0;
+            } else {
+                node->args = parse_expr_list(parser, &node->arg_count,
+                                             "Expected ',' or ')' after IN list item.");
+            }
+            return node;
         }
-        return node;
-    }
 
     /* BETWEEN */
     if (match(parser, TOKEN_BETWEEN)) {

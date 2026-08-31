@@ -871,9 +871,6 @@ static EvalResult eval_between(ExprNode *node, EvalCtx *ctx) {
 }
 
 static EvalResult eval_in(ExprNode *node, EvalCtx *ctx, bool negate) {
-    if (node->subquery) {
-        return eval_result_error("Subqueries are not supported in expressions.");
-    }
     EvalResult lhs = eval_expr(node->left, ctx);
     if (eval_result_is_error(&lhs)) return lhs;
     if (lhs.is_null) return eval_result_null();   /* UNKNOWN, not FALSE */
@@ -1079,10 +1076,6 @@ static EvalResult eval_expr_impl(ExprNode *node, EvalCtx *ctx) {
         /* ===== CASE ===== */
         case EXPR_CASE:
             return eval_case(node, ctx);
-
-        /* ===== Subquery ===== */
-        case EXPR_SUBQUERY:
-            return eval_result_error("Subqueries are not supported in expressions.");
 
         /* Unreachable: the executor resolves these against the expanded
            output columns before evaluation. */

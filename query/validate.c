@@ -85,7 +85,7 @@ bool expr_contains_aggregate(ExprNode *node) {
     return !expr_walk(node, contains_aggregate_visit, NULL);
 }
 
-/* Is the expression constant (no column refs, aggregates, or subqueries)? */
+/* Is the expression constant (no column refs or aggregates)? */
 static ExprVisit is_constant_visit(ExprNode *node, void *ud) {
     (void)ud;
     switch (node->type) {
@@ -95,7 +95,6 @@ static ExprVisit is_constant_visit(ExprNode *node, void *ud) {
             return EXPR_VISIT_CONTINUE;
         case EXPR_STAR:
         case EXPR_COLUMN_REF:
-        case EXPR_SUBQUERY:
             return EXPR_VISIT_ABORT;
         default:
             break;
@@ -276,7 +275,6 @@ ExprNode* make_column_ref_node(QArena *arena, const char *name) {
     node->args = NULL;
     node->case_whens = NULL;
     node->case_else = NULL;
-    node->subquery = NULL;
     return node;
 }
 

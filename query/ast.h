@@ -64,7 +64,6 @@ typedef enum {
     /* Complex */
     EXPR_FUNCTION_CALL,
     EXPR_CASE,
-    EXPR_SUBQUERY,
 
     /* ORDER BY positional reference to a select item that is '*': the
        executor resolves it against the star-expanded output columns
@@ -113,9 +112,6 @@ typedef struct ExprNode {
     /* CASE */
     struct CaseWhen *case_whens;
     struct ExprNode *case_else;
-
-    /* Subquery */
-    SelectStmt *subquery;
 } ExprNode;
 
 /* ===== Expression size bound =====

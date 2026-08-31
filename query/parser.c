@@ -275,7 +275,6 @@ ExprNode* alloc_expr_node(Parser *parser) {
     node->args = NULL;
     node->case_whens = NULL;
     node->case_else = NULL;
-    node->subquery = NULL;
     return node;
 }
 

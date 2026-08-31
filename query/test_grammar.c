@@ -211,7 +211,7 @@ static void test_select_list(void) {
     test_query_any("SELECT age + 1 AS a FROM 'query/data/students.csv'");
     test_query_any("SELECT age + 1 a FROM 'query/data/students.csv'");
     test_query_header_count("SELECT name, age, city, age * 2, UPPER(name) FROM 'query/data/students.csv'", 5);
-    /* scalar subquery in select_list – unimplemented */
+    /* scalar subquery in select_list – rejected (not supported) */
     test_query_error("SELECT (SELECT age FROM 'query/data/students.csv') FROM 'query/data/students.csv'", "not supported");
 }
 
@@ -480,8 +480,10 @@ static void test_parenthesized_expr(void) {
  * 17. '(' select_query ')' — scalar subquery
  * ================================================================= */
 static void test_scalar_subquery(void) {
-    printf("--- scalar subquery (unimplemented)\n");
+    printf("--- scalar subquery (rejected)\n");
     test_query_error("SELECT (SELECT age FROM 'query/data/students.csv') FROM 'query/data/students.csv'", "not supported");
+    /* A subquery in a WHERE predicate is rejected too. */
+    test_query_error("SELECT * FROM 'query/data/students.csv' WHERE (SELECT 1) > 1", "not supported");
 }
 
 /* =================================================================
@@ -520,7 +522,7 @@ static void test_search_in(void) {
     test_query("SELECT * FROM 'query/data/students.csv' WHERE city IN ('NYC', 'LA')", 4);
     test_query("SELECT * FROM 'query/data/students.csv' WHERE city NOT IN ('NYC', 'LA')", 1);
     test_query("SELECT * FROM 'query/data/students.csv' WHERE age IN (20, 22)", 2);
-    /* IN (subquery) – unimplemented; should error */
+    /* IN (subquery) – rejected (not supported) */
     test_query_error("SELECT * FROM 'query/data/students.csv' WHERE age IN (SELECT 20 FROM 'query/data/students.csv')", "not supported");
 }
 
