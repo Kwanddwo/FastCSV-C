@@ -1179,6 +1179,57 @@ static void test_cast_clamping(void) {
     test_query_value(sql, "Alice");
 }
 
+/* Round-trip fidelity: SELECT * must reproduce every cell's text exactly —
+   leading/trailing zeros, empty cells, scientific notation — verified
+   against a generated fixture rather than trusting the reader. */
+static void test_roundtrip_fidelity(void) {
+    printf("--- round-trip fidelity (SELECT * == input cells)\n");
+
+    const char *fixture = "/tmp/opencode/roundtrip.csv";
+    FILE *f = fopen(fixture, "w");
+    if (f == NULL) { fail++; printf("FAIL: cannot create %s\n", fixture); return; }
+    fprintf(f, "a,b,c,d\n");
+    fprintf(f, "05,3.50,,007\n");
+    fprintf(f, "empty,0.10,x,1e3\n");
+    fclose(f);
+
+    Arena ca;
+    if (arena_create(&ca, 2 * 1024) != ARENA_OK) { fail++; printf("FAIL: arena\n"); return; }
+    CSVConfig *cfg = csv_config_create(&ca);
+    csv_config_set_has_header(cfg, 1);
+    QueryResult res = query_execute(cfg, "SELECT * FROM '/tmp/opencode/roundtrip.csv'");
+    arena_destroy(&ca);
+
+    static const char *expect_hdr[] = { "a", "b", "c", "d" };
+    static const char *expect_rows[2][4] = {
+        { "05",  "3.50", "",    "007" },
+        { "empty", "0.10", "x", "1e3" },
+    };
+
+    bool ok = res.error == NULL && res.header_count == 4 && res.record_count == 2;
+    if (ok) {
+        for (int j = 0; j < 4; j++)
+            if (strcmp(res.headers[j], expect_hdr[j]) != 0) ok = false;
+        for (int i = 0; i < 2 && ok; i++) {
+            if ((int)res.records[i]->field_count != 4) { ok = false; break; }
+            for (int j = 0; j < 4; j++) {
+                if (strcmp(res.records[i]->fields[j], expect_rows[i][j]) != 0) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+    }
+    if (ok) {
+        pass++;
+    } else {
+        fail++;
+        printf("FAIL: round-trip: %s\n",
+               res.error ? res.error : "cell text diverged from the input");
+    }
+    query_result_destroy(&res);
+}
+
 /* RANDOM() must be volatile: one value per row (never constant-folded to a
    single statement value), and each process launch must see a fresh random
    sequence (the old code used unseeded rand(), so every run started at
@@ -1524,6 +1575,7 @@ int main(void) {
     test_computed_string_typing();
     test_locale_pinning();
     test_order_by_tie_determinism();
+    test_roundtrip_fidelity();
     test_star_aggregates();
     test_order_by_star_ordinal();
     test_deep_nesting();
