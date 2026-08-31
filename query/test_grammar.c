@@ -1284,6 +1284,28 @@ static void test_predicates_as_expressions(void) {
     test_query_value("SELECT name FROM 'query/data/students.csv' ORDER BY age > 21, name LIMIT 1", "Alice");
 }
 
+/* A bare '*' is only legal as a select-list head or COUNT's argument: as an
+   arithmetic/comparison operand or a non-COUNT function argument it must be
+   rejected (previously `SELECT * - 1` silently yielded a NULL-per-row
+   column). */
+static void test_misplaced_star(void) {
+    printf("--- misplaced '*' rejected\n");
+
+    test_query_error("SELECT * - 1 FROM 'query/data/students.csv'", "only allowed in the select list");
+    test_query_error("SELECT LENGTH(*) FROM 'query/data/students.csv'", "only allowed in the select list");
+    test_query_error("SELECT * = 1 FROM 'query/data/students.csv'", "only allowed in the select list");
+    test_query_error("SELECT * * 2 FROM 'query/data/students.csv'", "only allowed in the select list");
+    test_query_error("SELECT 1 FROM 'query/data/students.csv' WHERE *", "only allowed in the select list");
+    test_query_error("SELECT 1 FROM 'query/data/students.csv' ORDER BY *", "only allowed in the select list");
+
+    /* Legal forms still work: star head, star with columns, COUNT(*). */
+    test_query("SELECT * FROM 'query/data/students.csv'", 5);
+    test_query("SELECT *, city FROM 'query/data/students.csv'", 5);
+    test_query("SELECT COUNT(*) FROM 'query/data/students.csv'", 1);
+    test_query_value("SELECT COUNT(*) + 1 FROM 'query/data/students.csv'", "6");
+    test_query("SELECT city, COUNT(*) FROM 'query/data/students.csv' GROUP BY city", 3);
+}
+
 /* RANDOM() must be volatile: one value per row (never constant-folded to a
    single statement value), and each process launch must see a fresh random
    sequence (the old code used unseeded rand(), so every run started at
@@ -1635,6 +1657,7 @@ int main(void) {
     test_deep_nesting();
     test_cast_clamping();
     test_predicates_as_expressions();
+    test_misplaced_star();
     test_random_function();
     test_repl_splitter();
     test_parse_oom();

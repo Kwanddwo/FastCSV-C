@@ -966,8 +966,13 @@ static EvalResult eval_expr_impl(ExprNode *node, EvalCtx *ctx) {
             return eval_result_null();
 
         case EXPR_STAR: {
-            /* Bare asterisk when used as expression (e.g. COUNT(*)) */
-            return eval_result_str("*");
+            /* Defence-in-depth: validation rejects a bare '*' outside the
+               select-list head or COUNT. Reaching here would otherwise
+               silently treat '*' as the text "*" (yielding NULL in
+               arithmetic). The star is never evaluated: a select-list head
+               is expanded to column refs, and COUNT(*)'s star is consumed by
+               aggregate_row. */
+            return eval_result_error("Bare '*' is not a valid expression.");
         }
 
         case EXPR_COLUMN_REF: {

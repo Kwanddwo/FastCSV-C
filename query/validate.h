@@ -23,6 +23,11 @@ bool expr_walk(ExprNode *node, ExprVisitFn visit, void *ud);
 bool expr_contains_aggregate(ExprNode *node);
 bool expr_is_constant(ExprNode *node);
 bool validate_distinct_usage(ExprNode *node);
+
+/* True when a bare '*' appears only in a legal position (select-list head or
+   COUNT argument); false when it is an operand of an operator/function or
+   appears in a predicate/clause expression. */
+bool validate_star_usage(ExprNode *node);
 bool expr_grouped_valid(ExprNode *node, char **grouped, int grouped_count);
 
 /* ===== Column lookup ===== */

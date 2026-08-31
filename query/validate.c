@@ -125,6 +125,24 @@ bool validate_distinct_usage(ExprNode *node) {
     return expr_walk(node, validate_distinct_visit, NULL);
 }
 
+/* A bare '*' is only legal as a select-list head (the caller skips items
+   whose root is EXPR_STAR) or as COUNT's argument. Everywhere else — an
+   arithmetic/comparison operand, a non-COUNT function argument, or any
+   WHERE/GROUP BY/HAVING/ORDER BY expression — it is illegal. */
+static ExprVisit validate_star_visit(ExprNode *node, void *ud) {
+    (void)ud;
+    if (node->type == EXPR_STAR) return EXPR_VISIT_ABORT;
+    /* COUNT(*) is the one allowed star: do not descend into its argument. */
+    if (node->type == EXPR_FUNCTION_CALL && is_aggregate_name(node->str_value) &&
+        node->arg_count > 0 && node->args[0]->type == EXPR_STAR)
+        return EXPR_VISIT_PRUNE;
+    return EXPR_VISIT_CONTINUE;
+}
+
+bool validate_star_usage(ExprNode *node) {
+    return expr_walk(node, validate_star_visit, NULL);
+}
+
 /* Validate column references exist */
 typedef struct {
     char **headers;
@@ -309,12 +327,27 @@ const char* validate_stmt(SelectStmt *stmt, char **headers, int header_count,
     for (int i = 0; i < stmt->item_count; i++) {
         if (!validate_distinct_usage(stmt->items[i].expr))
             return "DISTINCT is only allowed with aggregate functions.";
+        /* A select-list item may be a bare '*' (expanded in the executor),
+           but any star inside a computed item (e.g. `* - 1`) is illegal. */
+        if (stmt->items[i].expr->type == EXPR_STAR) continue;
+        if (!validate_star_usage(stmt->items[i].expr))
+            return "'*' is only allowed in the select list or with COUNT.";
     }
     if (stmt->where && !validate_distinct_usage(stmt->where))
         return "DISTINCT is only allowed with aggregate functions.";
+    if (stmt->where && !validate_star_usage(stmt->where))
+        return "'*' is only allowed in the select list or with COUNT.";
+    for (int j = 0; j < stmt->group_by_count; j++) {
+        if (!validate_star_usage(stmt->group_by[j]))
+            return "'*' is only allowed in the select list or with COUNT.";
+    }
+    if (stmt->having && !validate_star_usage(stmt->having))
+        return "'*' is only allowed in the select list or with COUNT.";
     for (int j = 0; j < stmt->order_by_count; j++) {
         if (!validate_distinct_usage(stmt->order_by[j].expr))
             return "DISTINCT is only allowed with aggregate functions.";
+        if (!validate_star_usage(stmt->order_by[j].expr))
+            return "'*' is only allowed in the select list or with COUNT.";
     }
 
     /* Aggregates in WHERE are not supported */
