@@ -195,7 +195,10 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
         return make_unary(parser, EXPR_UNARY_MINUS, operand);
     }
 
-    /* (expression) or (subquery) */
+    /* (expression) or (subquery): parenthesized content is parsed with the
+       full search-condition grammar (so both a bare arithmetic primary and
+       a predicate like `(a > 1 AND b < 2)` work), and returned as a primary
+       so a following operator (e.g. `(a + b) * c`) continues correctly. */
     if (match(parser, TOKEN_LPAREN)) {
         if (check(parser, TOKEN_SELECT)) {
             /* Scalar subquery */
@@ -207,7 +210,7 @@ static ExprNode* parse_arithmetic_primary(Parser *parser) {
             node->subquery = subq;
             return node;
         } else {
-            ExprNode *expr = parse_expression(parser);
+            ExprNode *expr = parse_search_condition(parser);
             consume(parser, TOKEN_RPAREN, "Expected ')' after expression.");
             return expr;
         }
@@ -469,14 +472,10 @@ static ExprNode* parse_not_expr(Parser *parser) {
  *   | expression    (bare expression, truthy)
  */
 static ExprNode* parse_primary_condition(Parser *parser) {
-    /* Parenthesized search condition */
-    if (match(parser, TOKEN_LPAREN)) {
-        ExprNode *expr = parse_search_condition(parser);
-        consume(parser, TOKEN_RPAREN, "Expected ')' after condition.");
-        return expr;
-    }
-
-    /* It starts with an expression. Parse it, then check for comparison tail. */
+    /* A leading '(' is handled by the arithmetic-primary grammar (paired
+       with the search-condition parser inside), which lets a parenthesized
+       primary continue into a following operator. Any remaining comparison /
+       IN / BETWEEN / LIKE / IS tail is matched below. */
     ExprNode *expr = parse_expression(parser);
 
     /* Comparison operators */

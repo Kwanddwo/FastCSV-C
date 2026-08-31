@@ -359,7 +359,7 @@ static void parse_order_by(Parser *parser, SelectStmt *stmt) {
     int count = 0;
 
     for (;;) {
-        ExprNode *expr = parse_expression(parser);
+        ExprNode *expr = parse_search_condition(parser);
         expr = resolve_select_ref(parser, stmt, expr);
 
         bool asc = true;
@@ -445,7 +445,7 @@ static void parse_group_by(Parser *parser, SelectStmt *stmt) {
     int count = 0;
 
     for (;;) {
-        ExprNode *expr = parse_expression(parser);
+        ExprNode *expr = parse_search_condition(parser);
 
         if (!ensure_capacity(parser, (void**)&exprs, &capacity, count,
                              sizeof(ExprNode*))) {
@@ -477,7 +477,7 @@ static SelectItem* parse_select_list(Parser *parser, int *out_count) {
         /* Record expression source start position */
         const char *src_start = parser->current.lexeme;
 
-        ExprNode *expr = parse_expression(parser);
+        ExprNode *expr = parse_search_condition(parser);
 
         /* Determine expression source text end */
         const char *src_end;

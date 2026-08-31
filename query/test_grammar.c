@@ -1230,6 +1230,28 @@ static void test_roundtrip_fidelity(void) {
     query_result_destroy(&res);
 }
 
+/* Predicates are valid expressions: SELECT items, GROUP BY and ORDER BY all
+   accept the full search-condition grammar, and a bare comparison/boolean
+   yields a 0/1 value. */
+static void test_predicates_as_expressions(void) {
+    printf("--- predicates as expressions\n");
+
+    /* SELECT-list predicates: 0/1 values. */
+    test_query_value("SELECT age > 20 FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT age > 19 FROM 'query/data/students.csv' LIMIT 1", "1");
+    test_query("SELECT name, age > 20 FROM 'query/data/students.csv'", 5);
+    test_query_value("SELECT (age > 20 AND city = 'NYC') AS adult FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT 20 > 19 FROM 'query/data/students.csv' LIMIT 1", "1");
+    /* Mixed columns, arithmetic that continues past a parenthesized primary. */
+    test_query_value("SELECT (age + 1) > 21 FROM 'query/data/students.csv' LIMIT 1", "0");
+    test_query_value("SELECT (1 + 2) * 3 FROM 'query/data/students.csv' LIMIT 1", "9");
+    test_query_value("SELECT name || '' FROM 'query/data/students.csv' LIMIT 1", "Alice");
+    /* GROUP BY a predicate (0/1 bucket). */
+    test_query("SELECT age > 21 FROM 'query/data/students.csv' GROUP BY age > 21", 2);
+    /* ORDER BY a predicate key (false-group sorts before true, then name). */
+    test_query_value("SELECT name FROM 'query/data/students.csv' ORDER BY age > 21, name LIMIT 1", "Alice");
+}
+
 /* RANDOM() must be volatile: one value per row (never constant-folded to a
    single statement value), and each process launch must see a fresh random
    sequence (the old code used unseeded rand(), so every run started at
@@ -1580,6 +1602,7 @@ int main(void) {
     test_order_by_star_ordinal();
     test_deep_nesting();
     test_cast_clamping();
+    test_predicates_as_expressions();
     test_random_function();
     test_repl_splitter();
     test_parse_oom();
