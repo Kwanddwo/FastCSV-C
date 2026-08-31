@@ -193,10 +193,10 @@ int eval_result_compare(const EvalResult *a, const EvalResult *b) {
 }
 
 /* Convert an EvalResult to a display string: always an arena-owned copy.
-   A numeric value that carries its raw text (cells and literals like "05")
-   displays verbatim — the engine types text for computation but never
-   reformats it for display. A plain numeric is formatted; NULL is "NULL".
-   Returns NULL on allocation failure. */
+    A numeric value that carries its raw text (cells and literals like "05")
+    displays verbatim — the engine types text for computation but never
+    reformats it for display. A plain numeric is formatted; NULL is "NULL".
+    Returns NULL on allocation failure — callers must check before strlen. */
 const char* eval_result_to_string(const EvalResult *r, QArena *arena) {
     eval_pin_numeric_locale();
     if (r->is_error) return r->error ? r->error : "";
@@ -311,6 +311,9 @@ static bool eval_str_arg(EvalCtx *ctx, ExprNode **args, int arg_count, int i,
     EvalResult v = eval_expr(args[i], ctx);
     if (eval_result_is_error(&v) || v.is_null) { *out = v; return false; }
     *str = eval_result_to_string(&v, ctx->tmp);
+    /* eval_result_to_string can fail only on allocation exhaustion, which
+       must not flow into a strlen(NULL) in the caller. */
+    if (*str == NULL) { *out = eval_result_null(); return false; }
     return true;
 }
 
@@ -438,7 +441,9 @@ static EvalResult fn_concat(EvalCtx *ctx, ExprNode **args, int arg_count) {
         vals[i] = eval_expr(args[i], ctx);
         if (eval_result_is_error(&vals[i])) return vals[i];
         if (vals[i].is_null) continue;   /* NULL contributes nothing */
-        total += strlen(eval_result_to_string(&vals[i], ctx->tmp));
+        const char *a = eval_result_to_string(&vals[i], ctx->tmp);
+        if (a == NULL) return eval_result_null();  /* allocation failure */
+        total += strlen(a);
     }
     char *res;
     ar = qarena_alloc(ctx->tmp, total + 1, (void**)&res);
@@ -447,6 +452,7 @@ static EvalResult fn_concat(EvalCtx *ctx, ExprNode **args, int arg_count) {
     for (int i = 0; i < arg_count; i++) {
         if (vals[i].is_null) continue;
         const char *s = eval_result_to_string(&vals[i], ctx->tmp);
+        if (s == NULL) return eval_result_null();  /* allocation failure */
         size_t len = strlen(s);
         memcpy(res + pos, s, len);
         pos += len;
@@ -719,6 +725,9 @@ static EvalResult eval_concat(ExprNode *node, EvalCtx *ctx) {
     if (l.is_null || r.is_null) return eval_result_null();
     const char *ls = eval_result_to_string(&l, ctx->tmp);
     const char *rs = eval_result_to_string(&r, ctx->tmp);
+    /* Standard || is NULL-propagating; a failed allocation is treated the
+       same way instead of flowing into strlen(NULL). */
+    if (ls == NULL || rs == NULL) return eval_result_null();
     size_t ll = strlen(ls);
     size_t rl = strlen(rs);
     char *res;

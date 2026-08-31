@@ -1481,6 +1481,72 @@ static long test_process_vm_kb(void) {
     return kb;
 }
 
+/* Allocation-failure robustness for the string/concat paths: eval_result_
+   to_string can return NULL only on memory exhaustion, and callers must not
+   pass it to strlen/memcpy. Runs several such queries in a forked child
+   under tight memory caps; the child must never crash and must end with a
+   clean result or "Out of memory.". */
+static void test_allocation_failure_robustness(void) {
+    printf("--- allocation-failure robustness (concat/string)\n");
+    if (under_valgrind()) {
+        printf("     (skipped under valgrind)\n");
+        pass++;
+        return;
+    }
+
+    fflush(stdout);
+    int pfd[2];
+    if (pipe(pfd) != 0) { printf("FAIL: pipe\n"); fail++; return; }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pfd[0]);
+        long vm = test_process_vm_kb();
+        /* Caps around the process base so the query starts but the arena
+           pressure can fail allocation mid-evaluation. */
+        const long caps_kb[] = { vm + 512, vm + 256, vm + 128 };
+        const char *sqls[] = {
+            "SELECT CONCAT(name, city) FROM 'query/data/students.csv' LIMIT 1",
+            "SELECT name || city FROM 'query/data/students.csv' LIMIT 1",
+            "SELECT UPPER(name) FROM 'query/data/students.csv' LIMIT 1",
+        };
+        for (size_t c = 0; c < sizeof(caps_kb) / sizeof(caps_kb[0]); c++) {
+            if (caps_kb[c] <= 0) continue;
+            struct rlimit lim;
+            lim.rlim_cur = (rlim_t)caps_kb[c] * 1024;
+            lim.rlim_max = (rlim_t)caps_kb[c] * 1024;
+            if (setrlimit(RLIMIT_AS, &lim) != 0) continue;
+            for (size_t q = 0; q < sizeof(sqls) / sizeof(sqls[0]); q++) {
+                Arena ca;
+                if (arena_create(&ca, 2 * 1024) != ARENA_OK) continue;
+                CSVConfig *cfg = csv_config_create(&ca);
+                csv_config_set_has_header(cfg, 1);
+                QueryResult res = query_execute(cfg, sqls[q]);
+                bool clean = res.error == NULL ||
+                             strcmp(res.error, "Out of memory.") == 0;
+                query_result_destroy(&res);
+                arena_destroy(&ca);
+                if (!clean) { write(pfd[1], "BAD\n", 4); _exit(1); }
+            }
+        }
+        write(pfd[1], "OK\n", 3);
+        _exit(0);
+    }
+    close(pfd[1]);
+    char buf[16];
+    ssize_t n = read(pfd[0], buf, sizeof(buf) - 1);
+    close(pfd[0]);
+    int st = 0;
+    waitpid(pid, &st, 0);
+    buf[n > 0 ? n : 0] = '\0';
+    if (!WIFSIGNALED(st) && strcmp(buf, "OK\n") == 0) {
+        pass++;
+    } else {
+        fail++;
+        printf("FAIL: allocation-failure robustness -> %s",
+               WIFSIGNALED(st) ? "child crashed (signal)\n" : buf);
+    }
+}
+
 /* Regression: parse-time memory exhaustion must abort the statement with
    exactly "Out of memory." — never a crash, and never a misleading runtime
    or syntax error produced from a partially built statement (the old code
@@ -1661,6 +1727,7 @@ int main(void) {
     test_random_function();
     test_repl_splitter();
     test_parse_oom();
+    test_allocation_failure_robustness();
 
     printf("\n=== Results ===\n");
     printf("PASS: %d   FAIL: %d   TOTAL: %d\n", pass, fail, pass + fail);
