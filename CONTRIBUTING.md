@@ -93,6 +93,18 @@ int csv_reader_function(CSVReader* reader, const char* arg) {
 - Clean up resources on error paths
 - Document error conditions in function headers
 
+### Query-engine error propagation
+
+The query engine threads error strings (`const char *`) through its phases.
+Two conventions to keep uniform:
+
+- Query-side arena allocations use `QARENA_IF_FAIL(expr, msg)` (qarena.h) to
+  fail with "Out of memory." — a single evaluation, no hand-rolled
+  `if (ar != QARENA_OK) return ...;`. Parser node allocation failures go
+  through `parser_oom`/the fail-stop flags instead.
+- Any new failure path must be reachable-and-testable; add a test in
+  `query/test_grammar.c` (the suite is the guard against regressions).
+
 ## Testing
 
 ### Unit Tests

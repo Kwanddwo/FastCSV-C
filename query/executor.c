@@ -52,12 +52,10 @@ void* alloc_or_error(QArena *arena, size_t size, const char **error) {
 const char* project_row(const OutputCol *out_cols, int out_count,
                                EvalCtx *ctx, CSVRecord **out) {
     void *mem;
-    QArenaResult ar = qarena_alloc(ctx->arena, sizeof(CSVRecord), &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(ctx->arena, sizeof(CSVRecord), &mem), "Out of memory.");
     CSVRecord *proj = (CSVRecord*)mem;
 
-    ar = qarena_alloc(ctx->arena, sizeof(char*) * (size_t)out_count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(ctx->arena, sizeof(char*) * (size_t)out_count, &mem), "Out of memory.");
     proj->fields = (char**)mem;
     proj->field_count = (size_t)out_count;
 
@@ -82,7 +80,7 @@ const char* project_row(const OutputCol *out_cols, int out_count,
 
         EvalResult er = eval_expr(expr, ctx);
         if (eval_result_is_error(&er)) return er.error;
-        char *s = (char*)eval_result_dup_to_arena(&er, ctx->arena);
+        char *s = (char*)eval_result_to_string(&er, ctx->arena);
         if (s == NULL) return "Out of memory.";
         proj->fields[i] = s;
     }
@@ -142,8 +140,7 @@ static const char* open_reader(CSVConfig *config, SelectStmt *stmt, QArena *aren
     if (reader == NULL && !has_csv_extension(stmt->table_name)) {
         size_t len = strlen(stmt->table_name);
         void *mem;
-        QArenaResult ar = qarena_alloc(arena, len + 5, &mem);
-        if (ar != QARENA_OK) return "Out of memory.";
+        QARENA_IF_FAIL(qarena_alloc(arena, len + 5, &mem), "Out of memory.");
         char *candidate = (char*)mem;
         memcpy(candidate, stmt->table_name, len);
         memcpy(candidate + len, ".csv", 5);
@@ -191,8 +188,7 @@ static const char* build_output_cols(SelectStmt *stmt, char **headers, int heade
     }
 
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(OutputCol) * (size_t)count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(OutputCol) * (size_t)count, &mem), "Out of memory.");
     OutputCol *cols = (OutputCol*)mem;
     int idx = 0;
 
@@ -221,8 +217,7 @@ static const char* build_output_cols(SelectStmt *stmt, char **headers, int heade
 static const char* set_result_headers(QueryResult *result, OutputCol *out_cols,
                                       int out_count, QArena *arena) {
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(char*) * (size_t)out_count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(char*) * (size_t)out_count, &mem), "Out of memory.");
     result->headers = (char**)mem;
     result->header_count = out_count;
 
@@ -234,383 +229,404 @@ static const char* set_result_headers(QueryResult *result, OutputCol *out_cols,
 
 /* Enforce the grouping rules for the given select items. */
 
-/* ===== Main executor ===== */
+/* ===== Executor phases ===== */
 
-QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
-                           QArena *tmp, Arena *config_arena) {
-    QueryResult result = query_result_init();
+/* Shared state threaded through the executor phases. */
+typedef struct {
+    CSVConfig *config;
+    SelectStmt *stmt;
+    QArena *arena;
+    QArena *tmp;
+    Arena *config_arena;
 
-    /* 0. Validate FROM and open file */
-    CSVReader *reader = NULL;
-    char **headers = NULL;
-    int header_count = 0;
-    const char *err = open_reader(config, stmt, arena, config_arena, &reader, &headers,
-                                  &header_count);
-    if (err) { result.error = err; goto cleanup; }
+    CSVReader *reader;
+    char **headers;
+    int header_count;
 
-    /* 1. Get CSV headers / 2. Validate column references */
+    OutputCol *out_cols;
+    int out_count;
+
+    bool has_agg;
+    bool group_mode;
+    bool grouped;
+
+    char **grouped_cols;
+    int grouped_col_count;
+
+    AggSpec *specs;
+    int spec_count;
+
+    bool distinct_limit_path;
+    RecordSet rset;
+    bool topk_path;
+    TopK topk;
+    long long window_ll;
+
+    int k;
+    EvalResult *sort_keys;
+    int sort_keys_cap;
+
+    int capacity;
+    AggGroup **groups;
+    int group_count;
+    int group_cap;
+    GroupTable gtab;
+    int group_by_k;
+} ExecState;
+
+/* Phase 0-2: open the CSV, validate column references, build output columns
+   and resolve ORDER BY positional references against the expanded columns. */
+static const char* exec_prepare(ExecState *st) {
+    const char *err = open_reader(st->config, st->stmt, st->arena, st->config_arena,
+                                  &st->reader, &st->headers, &st->header_count);
+    if (err) return err;
+
     const char *bad_col = NULL;
-    err = validate_stmt(stmt, headers, header_count, arena, &bad_col);
-    if (err) { result.error = err; goto cleanup; }
+    err = validate_stmt(st->stmt, st->headers, st->header_count, st->arena, &bad_col);
+    if (err) return err;
 
-    /* 3. Build output columns from select items */
-    OutputCol *out_cols = NULL;
-    int out_count = 0;
-    err = build_output_cols(stmt, headers, header_count, arena, &out_cols, &out_count);
-    if (err) { result.error = err; goto cleanup; }
+    err = build_output_cols(st->stmt, st->headers, st->header_count, st->arena,
+                            &st->out_cols, &st->out_count);
+    if (err) return err;
 
-    /* Resolve ORDER BY positional references that could not be bound at
-       parse time (a '*' select item, or an ordinal beyond the select list):
-       the star is expanded by now, so the ordinal addresses a result column
-       (ORDER BY 1 on SELECT * sorts by the first column). Out-of-range
-       positions error here, where the result width is known. */
-    for (int j = 0; j < stmt->order_by_count; j++) {
-        ExprNode *e = stmt->order_by[j].expr;
+    for (int j = 0; j < st->stmt->order_by_count; j++) {
+        ExprNode *e = st->stmt->order_by[j].expr;
         if (e != NULL && e->type == EXPR_ORDER_ORDINAL) {
             int pos = (int)e->num_value;
-            if (pos < 1 || pos > out_count) {
+            if (pos < 1 || pos > st->out_count) {
                 char buf[96];
                 snprintf(buf, sizeof(buf),
                          "SELECT position %d is not in the select list.", pos);
-                char *msg = qarena_strdup(arena, buf);
-                result.error = msg ? msg : "Out of memory.";
-                goto cleanup;
+                char *msg = qarena_strdup(st->arena, buf);
+                return msg ? msg : "Out of memory.";
             }
-            stmt->order_by[j].expr = out_cols[pos - 1].expr;
+            st->stmt->order_by[j].expr = st->out_cols[pos - 1].expr;
         }
     }
+    return NULL;
+}
 
-    /* 3.5 Aggregate / GROUP BY detection */
-    // TODO: Do all of these have to run if one has already found an aggregate?
-    bool has_agg = false;
-    for (int i = 0; i < out_count; i++) {
-        if (expr_contains_aggregate(out_cols[i].expr)) { has_agg = true; break; }
+/* Phase 3: aggregate detection, grouping validation and aggregate-spec
+   collection. */
+static const char* exec_plan(ExecState *st) {
+    st->has_agg = false;
+    for (int i = 0; i < st->out_count && !st->has_agg; i++) {
+        if (expr_contains_aggregate(st->out_cols[i].expr)) st->has_agg = true;
     }
-    if (stmt->having && expr_contains_aggregate(stmt->having)) has_agg = true;
-    for (int j = 0; j < stmt->order_by_count; j++) {
-        if (expr_contains_aggregate(stmt->order_by[j].expr)) { has_agg = true; break; }
+    if (!st->has_agg && st->stmt->having &&
+        expr_contains_aggregate(st->stmt->having)) st->has_agg = true;
+    for (int j = 0; j < st->stmt->order_by_count && !st->has_agg; j++) {
+        if (expr_contains_aggregate(st->stmt->order_by[j].expr)) st->has_agg = true;
     }
-    bool group_mode = stmt->group_by_count > 0;
-    bool grouped = has_agg || group_mode;
+    st->group_mode = st->stmt->group_by_count > 0;
+    st->grouped = st->has_agg || st->group_mode;
 
-    /* Collect grouped column names (for GROUP BY validation) */
-    char **grouped_cols = NULL;
-    int grouped_col_count = 0;
     int grouped_col_cap = 0;
-    if (group_mode) {
-        for (int j = 0; j < stmt->group_by_count; j++) {
-            collect_column_refs(stmt->group_by[j], &grouped_cols, &grouped_col_count,
-                                &grouped_col_cap, arena);
+    if (st->group_mode) {
+        for (int j = 0; j < st->stmt->group_by_count; j++) {
+            collect_column_refs(st->stmt->group_by[j], &st->grouped_cols,
+                                &st->grouped_col_count, &grouped_col_cap, st->arena);
         }
     }
 
-    err = validate_grouping(stmt, out_cols, out_count, grouped_cols, grouped_col_count,
-                            grouped, group_mode, arena);
-    if (err) { result.error = err; goto cleanup; }
+    const char *err = validate_grouping(st->stmt, st->out_cols, st->out_count,
+                                        st->grouped_cols, st->grouped_col_count,
+                                        st->grouped, st->group_mode, st->arena);
+    if (err) return err;
 
-    /* Collect aggregate specs from select items, HAVING, and ORDER BY */
-    AggSpec *specs = NULL;
-    int spec_count = 0;
     int spec_cap = 0;
-    if (grouped) {
-        for (int i = 0; i < out_count; i++) {
-            collect_specs(out_cols[i].expr, &specs, &spec_count, &spec_cap, arena);
+    if (st->grouped) {
+        for (int i = 0; i < st->out_count; i++) {
+            collect_specs(st->out_cols[i].expr, &st->specs, &st->spec_count, &spec_cap,
+                          st->arena);
         }
-        if (stmt->having) {
-            collect_specs(stmt->having, &specs, &spec_count, &spec_cap, arena);
+        if (st->stmt->having) {
+            collect_specs(st->stmt->having, &st->specs, &st->spec_count, &spec_cap,
+                          st->arena);
         }
-        for (int j = 0; j < stmt->order_by_count; j++) {
-            collect_specs(stmt->order_by[j].expr, &specs, &spec_count, &spec_cap, arena);
+        for (int j = 0; j < st->stmt->order_by_count; j++) {
+            collect_specs(st->stmt->order_by[j].expr, &st->specs, &st->spec_count,
+                          &spec_cap, st->arena);
         }
         /* Validate DISTINCT usage */
-        for (int i = 0; i < spec_count; i++) {
-            ExprNode *n = specs[i].node;
-            /* Only COUNT may take '*'; SUM(*)/AVG(*)/MIN(*)/MAX(*) would
-               otherwise silently evaluate '*' as text and yield NULL or
-               the literal '*'. */
+        for (int i = 0; i < st->spec_count; i++) {
+            ExprNode *n = st->specs[i].node;
             if (n->arg_count > 0 && n->args[0]->type == EXPR_STAR &&
                 !str_ieq(n->str_value, "COUNT")) {
-                result.error = "'*' is only allowed with COUNT.";
-                goto cleanup;
+                return "'*' is only allowed with COUNT.";
             }
             if (!n->distinct) continue;
             if (n->arg_count != 1) {
-                result.error = "DISTINCT takes exactly one argument.";
-                goto cleanup;
+                return "DISTINCT takes exactly one argument.";
             }
             if (n->args[0]->type == EXPR_STAR) {
-                result.error = "DISTINCT cannot be applied to '*'.";
-                goto cleanup;
+                return "DISTINCT cannot be applied to '*'.";
             }
         }
     }
+    return NULL;
+}
 
-    /* 4. Set result headers */
-    err = set_result_headers(&result, out_cols, out_count, arena);
-    if (err) { result.error = err; goto cleanup; }
+/* Phase 4 initializes the path selection and grouped/top-k state; it is
+   inlined in execute_select (it writes directly into QueryResult). */
 
-    /* 5. Iterate records */
-    int capacity = GROW_INITIAL_CAPACITY;
-    void *mem = alloc_or_error(arena, sizeof(CSVRecord*) * (size_t)capacity, &err);
-    if (mem == NULL) { result.error = err; goto cleanup; }
-    result.records = (CSVRecord**)mem;
-    result.record_count = 0;
+/* ===== Main executor ===== */
 
-    /* DISTINCT + LIMIT without ORDER BY or grouping: dedupe incrementally so
-       reading can stop once the requested number of distinct rows is found. */
-    bool distinct_limit_path = stmt->distinct && stmt->has_limit &&
-                               stmt->order_by_count == 0 && !grouped;
-    RecordSet rset;
-    if (distinct_limit_path) {
-        err = record_set_init(arena, &rset);
-        if (err) { result.error = err; goto cleanup; }
-    }
-
-    /* Parallel sort-keys array (order_by_count entries per row) */
-    int k = stmt->order_by_count;
-    EvalResult *sort_keys = NULL;
-    int sort_keys_cap = 0;
-
-    /* ORDER BY + LIMIT without grouping or DISTINCT: keep only the top
-       `window` rows in a bounded heap instead of materializing and sorting
-       every row. The window includes OFFSET rows, which are read and discarded
-       by apply_limit_offset. Above QUERY_TOPK_MAX_K the bounded heap would
-       degenerate, so the query falls back to the full-sort path. */
-    long long window_ll = (stmt->has_offset && stmt->offset > 0) ? stmt->offset : 0;
-    window_ll += stmt->limit;
-    bool topk_path = k > 0 && stmt->has_limit && !grouped && !stmt->distinct &&
-                     window_ll >= 0 && window_ll <= QUERY_TOPK_MAX_K;
-    TopK topk;
-    if (topk_path && window_ll > 0) {
-        err = topk_init(arena, &topk, (int)window_ll, k, stmt->order_by);
-        if (err) { result.error = err; goto cleanup; }
-    }
-
-    /* ORDER BY + LIMIT 0: the window is empty, so no row can match; skip the
-       scan entirely. (The topk struct is left uninitialized on purpose.) */
-    if (topk_path && window_ll <= 0) {
-        result.record_count = 0;
-        goto cleanup;
-    }
-
-    /* Grouped execution state */
-    int group_by_k = stmt->group_by_count;
-    AggGroup **groups = NULL;
-    int group_count = 0;
-    int group_cap = 0;
-    GroupTable gtab = {NULL, 0, 0};
-    if (grouped) {
-        group_cap = GROUP_INITIAL_CAPACITY;
-        mem = alloc_or_error(arena, sizeof(AggGroup*) * (size_t)group_cap, &err);
-        if (mem == NULL) { result.error = err; goto cleanup; }
-        groups = (AggGroup**)mem;
-
-        err = group_table_init(arena, &gtab, GROUP_INITIAL_CAPACITY * 2);
-        if (err) { result.error = err; goto cleanup; }
-
-        /* Aggregates without GROUP BY use a single implicit group so that
-           empty input still produces one output row. */
-        if (!group_mode) {
-            groups[group_count] = agg_group_create(0, spec_count, arena);
-            if (groups[group_count] == NULL) { result.error = "Out of memory."; goto cleanup; }
-            err = group_table_insert(arena, &gtab, groups, 0, 1, 0);
-            if (err) { result.error = err; goto cleanup; }
-            group_count = 1;
-        }
-    }
-
+/* Phase 5: the scan loop. Returns NULL on success or the error message
+   (also stored in result->error). Failure unwinds to `fail`. */
+static const char* exec_scan(ExecState *st, QueryResult *result) {
+    const char *err = NULL;
     CSVRecord *record;
-    while ((record = csv_reader_next_record(reader)) != NULL) {
-        qarena_reset(tmp);
+    while ((record = csv_reader_next_record(st->reader)) != NULL) {
+        qarena_reset(st->tmp);
 
-        /* Per-row cell classification cache: every column reference in
-           WHERE, sort keys, grouping and projection reuses the first
-           strtod of the row instead of re-parsing per reference. */
         CellMemo memo;
         memo.cap = (int)record->field_count;
         memo.valid = NULL;
         memo.vals = NULL;
         if (record->field_count > 0) {
-            void *mem;
-            QArenaResult ar = qarena_alloc(tmp,
-                                           sizeof(EvalResult) * record->field_count,
-                                           &mem);
-            if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
-            memo.vals = (EvalResult*)mem;
-            ar = qarena_alloc(tmp, record->field_count, &mem);
-            if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
-            memset(mem, 0, record->field_count);
-            memo.valid = (uint8_t*)mem;
+            void *m;
+            QArenaResult ar = qarena_alloc(st->tmp, sizeof(EvalResult) * record->field_count,
+                                           &m);
+            if (ar != QARENA_OK) { result->error = "Out of memory."; goto fail; }
+            memo.vals = (EvalResult*)m;
+            ar = qarena_alloc(st->tmp, record->field_count, &m);
+            if (ar != QARENA_OK) { result->error = "Out of memory."; goto fail; }
+            memset(m, 0, record->field_count);
+            memo.valid = (uint8_t*)m;
         }
 
-        /* Evaluate WHERE */
-        if (stmt->where) {
-            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
-            EvalResult where_val = eval_expr(stmt->where, &ctx);
+        if (st->stmt->where) {
+            EvalCtx ctx = eval_ctx_for(record, st->headers, st->header_count, st->arena, st->tmp, &memo, NULL);
+            EvalResult where_val = eval_expr(st->stmt->where, &ctx);
             if (eval_result_is_error(&where_val)) {
-                result.error = where_val.error;
-                goto cleanup;
+                result->error = where_val.error;
+                goto fail;
             }
             if (!eval_result_is_true(&where_val)) continue;
         }
 
-        /* Grouped mode: accumulate into per-group states, no per-row output */
-        if (grouped) {
+        if (st->grouped) {
             EvalResult *keys = NULL;
-            if (group_by_k > 0) {
+            if (st->group_by_k > 0) {
                 void *keys_mem;
-                QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * (size_t)group_by_k,
-                                             &keys_mem);
-                if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
+                QArenaResult ar = qarena_alloc(st->tmp, sizeof(EvalResult) * (size_t)st->group_by_k,
+                                               &keys_mem);
+                if (ar != QARENA_OK) { result->error = "Out of memory."; goto fail; }
                 keys = (EvalResult*)keys_mem;
-                for (int j = 0; j < group_by_k; j++) {
-                    EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
-                    EvalResult er = eval_expr(stmt->group_by[j], &ctx);
+                for (int j = 0; j < st->group_by_k; j++) {
+                    EvalCtx ctx = eval_ctx_for(record, st->headers, st->header_count, st->arena, st->tmp, &memo, NULL);
+                    EvalResult er = eval_expr(st->stmt->group_by[j], &ctx);
                     if (eval_result_is_error(&er)) {
-                        result.error = er.error;
-                        goto cleanup;
+                        result->error = er.error;
+                        goto fail;
                     }
-                    /* No copy needed: the key string (reader-owned field or
-                       tmp-arena value) stays valid for this whole iteration,
-                       and the transient key is only hashed/compared here.
-                       New groups persist their own arena copy below. */
                     keys[j] = er;
                 }
             }
 
-            int gi = group_table_find(&gtab, groups, keys, group_by_k);
-            AggGroup *g = gi >= 0 ? groups[gi] : NULL;
+            int gi = group_table_find(&st->gtab, st->groups, keys, st->group_by_k);
+            AggGroup *g = gi >= 0 ? st->groups[gi] : NULL;
             if (g == NULL) {
-                err = grow_array(arena, (void**)&groups, &group_cap, group_count + 1,
-                                 sizeof(AggGroup*));
-                if (err) { result.error = err; goto cleanup; }
-                g = agg_group_create(group_by_k, spec_count, arena);
-                if (g == NULL) { result.error = "Out of memory."; goto cleanup; }
-                if (group_by_k > 0) {
-                    for (int j = 0; j < group_by_k; j++) {
+                err = grow_array(st->arena, (void**)&st->groups, &st->group_cap,
+                                 st->group_count + 1, sizeof(AggGroup*));
+                if (err) { result->error = err; goto fail; }
+                g = agg_group_create(st->group_by_k, st->spec_count, st->arena);
+                if (g == NULL) { result->error = "Out of memory."; goto fail; }
+                if (st->group_by_k > 0) {
+                    for (int j = 0; j < st->group_by_k; j++) {
                         g->keys[j] = keys[j];
                         if (keys[j].str_val)
-                            g->keys[j].str_val = qarena_strdup(arena, keys[j].str_val);
+                            g->keys[j].str_val = qarena_strdup(st->arena, keys[j].str_val);
                     }
                 }
-                if (group_count == INT_MAX) {
-                    result.error = "Result exceeds INT_MAX groups.";
-                    goto cleanup;
+                if (st->group_count == INT_MAX) {
+                    result->error = "Result exceeds INT_MAX groups.";
+                    goto fail;
                 }
-                groups[group_count] = g;
-                err = group_table_insert(arena, &gtab, groups, group_count,
-                                         group_count + 1, group_by_k);
-                if (err) { result.error = err; goto cleanup; }
-                group_count++;
+                st->groups[st->group_count] = g;
+                err = group_table_insert(st->arena, &st->gtab, st->groups, st->group_count,
+                                         st->group_count + 1, st->group_by_k);
+                if (err) { result->error = err; goto fail; }
+                st->group_count++;
             }
-            if (g->rep.field_count == 0) g->rep = copy_record(record, arena);
+            if (g->rep.field_count == 0) g->rep = copy_record(record, st->arena);
 
-            for (int i = 0; i < spec_count; i++) {
-                EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
+            for (int i = 0; i < st->spec_count; i++) {
+                EvalCtx ctx = eval_ctx_for(record, st->headers, st->header_count, st->arena, st->tmp, &memo, NULL);
                 const char *aerr = aggregate_row(
-                    specs[i].node->arg_count > 0 ? specs[i].node->args[0] : NULL,
-                    specs[i].kind, specs[i].distinct, &g->states[i], &ctx);
-                if (aerr) { result.error = aerr; goto cleanup; }
+                    st->specs[i].node->arg_count > 0 ? st->specs[i].node->args[0] : NULL,
+                    st->specs[i].kind, st->specs[i].distinct, &g->states[i], &ctx);
+                if (aerr) { result->error = aerr; goto fail; }
             }
             continue;
         }
 
-        /* Top-K path: evaluate the ORDER BY keys, keep only the best `window`
-           rows, and project a row only when it survives. Non-kept rows cost
-           only the key evaluation. */
-        if (topk_path) {
-            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
+        if (st->topk_path) {
+            EvalCtx ctx = eval_ctx_for(record, st->headers, st->header_count, st->arena, st->tmp, &memo, NULL);
             EvalResult *keys;
-            QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * (size_t)k,
-                                         (void**)&keys);
-            if (ar != QARENA_OK) { result.error = "Out of memory."; goto cleanup; }
-            for (int j = 0; j < k; j++) {
-                EvalResult er = eval_expr(stmt->order_by[j].expr, &ctx);
+            QArenaResult ar = qarena_alloc(st->tmp, sizeof(EvalResult) * (size_t)st->k,
+                                           (void**)&keys);
+            if (ar != QARENA_OK) { result->error = "Out of memory."; goto fail; }
+            for (int j = 0; j < st->k; j++) {
+                EvalResult er = eval_expr(st->stmt->order_by[j].expr, &ctx);
                 if (eval_result_is_error(&er)) {
-                    result.error = er.error;
-                    goto cleanup;
+                    result->error = er.error;
+                    goto fail;
                 }
                 keys[j] = er;
             }
-            if (!topk_would_keep(&topk, keys)) continue;
+            if (!topk_would_keep(&st->topk, keys)) continue;
 
             CSVRecord *proj = NULL;
-            err = project_row(out_cols, out_count, &ctx, &proj);
-            if (err) { result.error = err; goto cleanup; }
-            topk_insert(arena, &topk, proj, keys);
+            err = project_row(st->out_cols, st->out_count, &ctx, &proj);
+            if (err) { result->error = err; goto fail; }
+            topk_insert(st->arena, &st->topk, proj, keys);
             continue;
         }
 
-        /* Pre-compute ORDER BY keys on the original record */
-        if (k > 0) {
-            EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
-            err = eval_sort_keys(&ctx, stmt->order_by, k, &sort_keys, &sort_keys_cap,
-                                 result.record_count);
-            if (err) { result.error = err; goto cleanup; }
+        if (st->k > 0) {
+            EvalCtx ctx = eval_ctx_for(record, st->headers, st->header_count, st->arena, st->tmp, &memo, NULL);
+            err = eval_sort_keys(&ctx, st->stmt->order_by, st->k, &st->sort_keys,
+                                 &st->sort_keys_cap, result->record_count);
+            if (err) { result->error = err; goto fail; }
         }
 
-        /* Allocate and append projected record */
         CSVRecord *proj = NULL;
-        EvalCtx ctx = eval_ctx_for(record, headers, header_count, arena, tmp, &memo, NULL);
-        err = project_row(out_cols, out_count, &ctx, &proj);
-        if (err) { result.error = err; goto cleanup; }
+        EvalCtx ctx = eval_ctx_for(record, st->headers, st->header_count, st->arena, st->tmp, &memo, NULL);
+        err = project_row(st->out_cols, st->out_count, &ctx, &proj);
+        if (err) { result->error = err; goto fail; }
 
-        /* DISTINCT + LIMIT: dedupe incrementally so duplicates never enter the
-           result, and stop reading once the window of distinct rows is found.
-           Duplicate rows are dropped without growing the result. */
-        if (distinct_limit_path) {
-            if (!record_set_add(&rset, arena, result.records, proj, &err)) {
-                if (err) { result.error = err; goto cleanup; }
+        if (st->distinct_limit_path) {
+            if (!record_set_add(&st->rset, st->arena, result->records, proj, &err)) {
+                if (err) { result->error = err; goto fail; }
                 continue;
             }
         }
 
-        err = append_result(&result.records, &result.record_count, &capacity, proj, arena);
-        if (err) { result.error = err; goto cleanup; }
+        err = append_result(&result->records, &result->record_count, &st->capacity, proj, st->arena);
+        if (err) { result->error = err; goto fail; }
 
-        /* LIMIT without ORDER BY can stop reading once the requested window
-           is materialized. Skipped for ORDER BY (needs every row to sort) and
-           grouped queries (output is built after the scan). With DISTINCT the
-           window counts distinct rows, which the incremental dedupe tracks. */
-        if (!grouped && stmt->has_limit && stmt->order_by_count == 0) {
-            long long target = (stmt->has_offset && stmt->offset > 0) ? stmt->offset : 0;
-            target += stmt->limit;
+        if (!st->grouped && st->stmt->has_limit && st->stmt->order_by_count == 0) {
+            long long target = (st->stmt->has_offset && st->stmt->offset > 0) ? st->stmt->offset : 0;
+            target += st->stmt->limit;
             if (target < 0) target = 0;
-            if (result.record_count >= target) break;
+            if (result->record_count >= target) break;
         }
     }
 
-    /* 5.5 Grouped mode: build one output row per group, filtered by HAVING */
-    if (grouped) {
-        err = finalize_groups(&result, groups, group_count, specs, spec_count, out_cols,
-                              out_count, k, stmt, arena, tmp, headers, header_count,
-                              &sort_keys, &sort_keys_cap, &capacity);
+
+fail:
+    return result->error;
+}
+
+QueryResult execute_select(CSVConfig *config, SelectStmt *stmt, QArena *arena,
+                           QArena *tmp, Arena *config_arena) {
+    QueryResult result = query_result_init();
+
+    ExecState st = {0};
+    st.config = config;
+    st.stmt = stmt;
+    st.arena = arena;
+    st.tmp = tmp;
+    st.config_arena = config_arena;
+
+    /* Set result headers early (needs out_cols from prepare). */
+    void *mem;
+    const char *err = exec_prepare(&st);
+    if (err) { result.error = err; goto cleanup; }
+
+    err = exec_plan(&st);
+    if (err) { result.error = err; goto cleanup; }
+
+    err = set_result_headers(&result, st.out_cols, st.out_count, arena);
+    if (err) { result.error = err; goto cleanup; }
+
+    /* --- begin scan-state initialization (inlined for clarity) --- */
+    int capacity = GROW_INITIAL_CAPACITY;
+    mem = alloc_or_error(arena, sizeof(CSVRecord*) * (size_t)capacity, &err);
+    if (mem == NULL) { result.error = err; goto cleanup; }
+    result.records = (CSVRecord**)mem;
+    result.record_count = 0;
+    st.capacity = capacity;
+
+    st.distinct_limit_path = stmt->distinct && stmt->has_limit &&
+                             stmt->order_by_count == 0 && !st.grouped;
+    if (st.distinct_limit_path) {
+        err = record_set_init(arena, &st.rset);
         if (err) { result.error = err; goto cleanup; }
     }
 
-    /* 6. Handle DISTINCT (skipped when the incremental LIMIT path already
-       deduped records while scanning). */
-    if (stmt->distinct && !distinct_limit_path) {
-        err = dedupe_records(&result.records, &result.record_count, k, sort_keys, arena);
+    st.k = stmt->order_by_count;
+
+    st.window_ll = (stmt->has_offset && stmt->offset > 0) ? stmt->offset : 0;
+    st.window_ll += stmt->limit;
+    st.topk_path = st.k > 0 && stmt->has_limit && !st.grouped && !stmt->distinct &&
+                   st.window_ll >= 0 && st.window_ll <= QUERY_TOPK_MAX_K;
+    if (st.topk_path && st.window_ll > 0) {
+        err = topk_init(arena, &st.topk, (int)st.window_ll, st.k, stmt->order_by);
+        if (err) { result.error = err; goto cleanup; }
+    }
+    if (st.topk_path && st.window_ll <= 0) {
+        result.record_count = 0;
+        goto cleanup;
+    }
+
+    st.group_by_k = stmt->group_by_count;
+    st.group_cap = 0;
+    if (st.grouped) {
+        st.group_cap = GROUP_INITIAL_CAPACITY;
+        mem = alloc_or_error(arena, sizeof(AggGroup*) * (size_t)st.group_cap, &err);
+        if (mem == NULL) { result.error = err; goto cleanup; }
+        st.groups = (AggGroup**)mem;
+
+        err = group_table_init(arena, &st.gtab, GROUP_INITIAL_CAPACITY * 2);
+        if (err) { result.error = err; goto cleanup; }
+
+        if (!st.group_mode) {
+            st.groups[st.group_count] = agg_group_create(0, st.spec_count, arena);
+            if (st.groups[st.group_count] == NULL) {
+                result.error = "Out of memory.";
+                goto cleanup;
+            }
+            err = group_table_insert(arena, &st.gtab, st.groups, 0, 1, 0);
+            if (err) { result.error = err; goto cleanup; }
+            st.group_count = 1;
+        }
+    }
+    /* --- end scan-state initialization --- */
+
+    /* Phase 5: scan (extracted above). */
+    err = exec_scan(&st, &result);
+    if (err) goto cleanup;
+
+    /* Phase 5.5-8: finalize groups, DISTINCT, ORDER BY, LIMIT/OFFSET. */
+    if (st.grouped) {
+        err = finalize_groups(&result, st.groups, st.group_count, st.specs, st.spec_count,
+                              st.out_cols, st.out_count, st.k, stmt, arena, tmp,
+                              st.headers, st.header_count, &st.sort_keys, &st.sort_keys_cap,
+                              &st.capacity);
         if (err) { result.error = err; goto cleanup; }
     }
 
-    /* 7. ORDER BY: either emit the top-k heap (already in final order) or
-       materialize and sort every projected row. */
-    if (topk_path) {
-        err = topk_emit(arena, &topk, &result.records, &result.record_count);
+    if (stmt->distinct && !st.distinct_limit_path) {
+        err = dedupe_records(&result.records, &result.record_count, st.k, st.sort_keys, arena);
+        if (err) { result.error = err; goto cleanup; }
+    }
+
+    if (st.topk_path) {
+        err = topk_emit(arena, &st.topk, &result.records, &result.record_count);
         if (err) { result.error = err; goto cleanup; }
     } else {
-        err = order_records(&result.records, result.record_count, k, sort_keys,
+        err = order_records(&result.records, result.record_count, st.k, st.sort_keys,
                             stmt->order_by, arena);
         if (err) { result.error = err; goto cleanup; }
     }
 
-    /* 8. LIMIT / OFFSET */
     apply_limit_offset(stmt, result.records, &result.record_count);
 
 cleanup:
-    csv_reader_free(reader);
+    csv_reader_free(st.reader);
     return result;
 
 }

@@ -23,11 +23,9 @@ const char* dedupe_records(CSVRecord ***records, int *record_count, int k,
 
     size_t cap = next_pow2((size_t)n * 2);
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(uint64_t) * (size_t)n, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(uint64_t) * (size_t)n, &mem), "Out of memory.");
     uint64_t *hashes = (uint64_t*)mem;
-    ar = qarena_alloc(arena, sizeof(int) * cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * cap, &mem), "Out of memory.");
     int *table = (int*)mem;
     for (size_t i = 0; i < cap; i++) table[i] = -1;
 
@@ -73,12 +71,10 @@ const char* record_set_init(QArena *arena, RecordSet *set) {
     set->cap = 32;
     set->count = 0;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)set->cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)set->cap, &mem), "Out of memory.");
     set->slots = (int*)mem;
     for (int i = 0; i < set->cap; i++) set->slots[i] = -1;
-    ar = qarena_alloc(arena, sizeof(uint64_t) * (size_t)set->cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(uint64_t) * (size_t)set->cap, &mem), "Out of memory.");
     set->hashes = (uint64_t*)mem;
     return NULL;
 }
@@ -86,8 +82,7 @@ const char* record_set_init(QArena *arena, RecordSet *set) {
 static const char* record_set_grow(QArena *arena, RecordSet *set) {
     int new_cap = set->cap * 2;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem), "Out of memory.");
     int *slots = (int*)mem;
     for (int i = 0; i < new_cap; i++) slots[i] = -1;
     for (int i = 0; i < set->count; i++) {

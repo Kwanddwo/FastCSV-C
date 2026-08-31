@@ -89,17 +89,13 @@ const char* topk_init(QArena *arena, TopK *tk, int cap, int key_count,
     tk->order_by = order_by;
     tk->next_ord = 0;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)cap, &mem), "Out of memory.");
     tk->recs = (CSVRecord**)mem;
-    ar = qarena_alloc(arena, sizeof(EvalResult) * (size_t)cap * (size_t)key_count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(EvalResult) * (size_t)cap * (size_t)key_count, &mem), "Out of memory.");
     tk->keys = (EvalResult*)mem;
-    ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem), "Out of memory.");
     tk->heap = (int*)mem;
-    ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem), "Out of memory.");
     tk->ord = (int*)mem;
     return NULL;
 }
@@ -196,8 +192,7 @@ const char* topk_emit(QArena *arena, TopK *tk, CSVRecord ***out,
     *out_count = n;
     if (n == 0) { *out = NULL; return NULL; }
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)n, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)n, &mem), "Out of memory.");
     CSVRecord **result = (CSVRecord**)mem;
     /* Each root-pop yields the worst of the remaining entries, so it belongs
        at the back of the ascending output. */
@@ -234,20 +229,17 @@ const char* order_records(CSVRecord ***records, int record_count, int k,
                                  QArena *arena) {
     if (k <= 0 || record_count <= 1) return NULL;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)record_count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)record_count, &mem), "Out of memory.");
     int *order = (int*)mem;
     for (int i = 0; i < record_count; i++) order[i] = i;
 
     /* Mergesort scratch (arena-owned). */
-    ar = qarena_alloc(arena, sizeof(int) * (size_t)record_count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)record_count, &mem), "Out of memory.");
     int *scratch = (int*)mem;
 
     sort_indices(order, record_count, sort_keys, k, order_by, scratch);
 
-    ar = qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)record_count, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(CSVRecord*) * (size_t)record_count, &mem), "Out of memory.");
     CSVRecord **gathered = (CSVRecord**)mem;
     for (int i = 0; i < record_count; i++)
         gathered[i] = (*records)[order[i]];

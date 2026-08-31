@@ -11,7 +11,6 @@
 static const int SEEN_INITIAL_CAPACITY = 8;    /* DISTINCT value-set capacity */
 
 /* ===== Aggregate accumulation ===== */
-/* ===== Aggregate accumulation ===== */
 
 /* Hash of a value, consistent with eval_result_compare's equality: NULL gets
    a constant bucket; anything parseable as a number hashes as its numeric
@@ -37,15 +36,12 @@ static const char* value_set_ensure(QArena *arena, ValueSet *s) {
     s->cap = SEEN_INITIAL_CAPACITY;
     s->count = 0;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)s->cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)s->cap, &mem), "Out of memory.");
     s->slots = (int*)mem;
     for (int i = 0; i < s->cap; i++) s->slots[i] = -1;
-    ar = qarena_alloc(arena, sizeof(uint64_t) * (size_t)s->cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(uint64_t) * (size_t)s->cap, &mem), "Out of memory.");
     s->hashes = (uint64_t*)mem;
-    ar = qarena_alloc(arena, sizeof(EvalResult) * (size_t)s->cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(EvalResult) * (size_t)s->cap, &mem), "Out of memory.");
     s->values = (EvalResult*)mem;
     return NULL;
 }
@@ -54,8 +50,7 @@ static const char* value_set_ensure(QArena *arena, ValueSet *s) {
 static const char* value_set_grow(QArena *arena, ValueSet *s) {
     int new_cap = s->cap * 2;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem), "Out of memory.");
     int *slots = (int*)mem;
     for (int i = 0; i < new_cap; i++) slots[i] = -1;
     for (int i = 0; i < s->count; i++) {
@@ -258,8 +253,7 @@ static uint64_t hash_group_keys(const EvalResult *keys, int k) {
 
 const char* group_table_init(QArena *arena, GroupTable *t, int cap) {
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)cap, &mem), "Out of memory.");
     t->slots = (int*)mem;
     t->cap = cap;
     t->count = 0;
@@ -272,8 +266,7 @@ static const char* group_table_grow(QArena *arena, GroupTable *t, AggGroup **gro
                                     int group_count, int k) {
     int new_cap = t->cap * 2;
     void *mem;
-    QArenaResult ar = qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem);
-    if (ar != QARENA_OK) return "Out of memory.";
+    QARENA_IF_FAIL(qarena_alloc(arena, sizeof(int) * (size_t)new_cap, &mem), "Out of memory.");
     int *slots = (int*)mem;
     for (int i = 0; i < new_cap; i++) slots[i] = -1;
     for (int gi = 0; gi < group_count; gi++) {
@@ -358,12 +351,10 @@ const char* finalize_groups(QueryResult *result, AggGroup **groups, int group_co
         memo.vals = NULL;
         if (g->rep.field_count > 0) {
             void *mem;
-            QArenaResult ar = qarena_alloc(tmp, sizeof(EvalResult) * g->rep.field_count,
-                                           &mem);
-            if (ar != QARENA_OK) return "Out of memory.";
+            QARENA_IF_FAIL(qarena_alloc(tmp, sizeof(EvalResult) * g->rep.field_count,
+                                           &mem), "Out of memory.");
             memo.vals = (EvalResult*)mem;
-            ar = qarena_alloc(tmp, g->rep.field_count, &mem);
-            if (ar != QARENA_OK) return "Out of memory.";
+            QARENA_IF_FAIL(qarena_alloc(tmp, g->rep.field_count, &mem), "Out of memory.");
             memset(mem, 0, g->rep.field_count);
             memo.valid = (uint8_t*)mem;
         }

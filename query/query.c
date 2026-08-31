@@ -11,17 +11,24 @@
 /* Scratch arenas owned by query_execute. The parse arena holds the AST and
    is reclaimed once execution finishes; the temp arena holds per-row
    evaluation scratch and is reset by the executor between records. The
-   result arena is created here and returned to the caller inside QueryResult.
-   These sizes are only the FIRST chunks: every qarena chains additional
-   chunks on demand (geometric growth), so no query-shape guessing is needed.
-   The library Arena below backs only the reader's config copy (the reader
-   retains it for the whole scan); it is a shallow, bounded library arena. */
+   result arena is created here and returned to the caller inside the
+   opaque QueryResultInternal. These sizes are only the FIRST chunks: every
+   qarena chains additional chunks on demand (geometric growth), so no
+   query-shape guessing is needed. The library Arena below backs only the
+   reader's config copy (the reader retains it for the whole scan); it is a
+   shallow, bounded library arena. */
 #define QUERY_PARSE_ARENA_INIT (64 * 1024)
 #define QUERY_TMP_ARENA_INIT    (64 * 1024)
 #define QUERY_RESULT_ARENA_INIT (64 * 1024)
 #define QUERY_CONFIG_ARENA_INIT (8 * 1024)
 
-QueryResult query_result_init() {
+/* Private result internals (the result arena), kept out of the public
+   header. */
+struct QueryResultInternal {
+    QArena arena;
+};
+
+QueryResult query_result_init(void) {
     QueryResult result;
     result.headers = NULL;
     result.header_count = 0;
@@ -31,14 +38,30 @@ QueryResult query_result_init() {
     result.error_line = 0;
     result.error_column = -1;
     result.parse_errors = NULL;
-    memset(&result.result_arena, 0, sizeof(QArena));
+    result.internal = NULL;
 
     return result;
 }
 
 void query_result_destroy(QueryResult *result) {
     if (result == NULL) return;
-    qarena_destroy(&result->result_arena);
+    if (result->internal != NULL) {
+        qarena_destroy(&result->internal->arena);
+        free(result->internal);
+        result->internal = NULL;
+    }
+}
+
+/* Create the private result arena holder with its first chunk; NULL on
+   allocation failure. */
+static QueryResultInternal* result_internal_create(void) {
+    QueryResultInternal *intern = (QueryResultInternal*)malloc(sizeof(*intern));
+    if (intern == NULL) return NULL;
+    if (qarena_create(&intern->arena, QUERY_RESULT_ARENA_INIT) != QARENA_OK) {
+        free(intern);
+        return NULL;
+    }
+    return intern;
 }
 
 /* Deep-copy a parse-error list out of a scratch arena so the messages
@@ -104,12 +127,13 @@ QueryResult query_execute(CSVConfig *config, const char *sql) {
     }
     if (stmt == NULL || parse_errors->count > 0) {
         if (parse_errors->count > 0) {
-            if (qarena_create(&result.result_arena, QUERY_RESULT_ARENA_INIT) != QARENA_OK) {
+            result.internal = result_internal_create();
+            if (result.internal == NULL) {
                 result.error = "Out of memory.";
                 qarena_destroy(&parse_arena);
                 return result;
             }
-            result.parse_errors = copy_parse_errors(parse_errors, &result.result_arena);
+            result.parse_errors = copy_parse_errors(parse_errors, &result.internal->arena);
             if (result.parse_errors != NULL) {
                 result.error = result.parse_errors->errors[0];
                 result.error_line = result.parse_errors->error_lines[0];
@@ -130,7 +154,8 @@ QueryResult query_execute(CSVConfig *config, const char *sql) {
        alive through execution) so they are never re-evaluated per row. */
     fold_constants(stmt, &parse_arena);
 
-    if (qarena_create(&result.result_arena, QUERY_RESULT_ARENA_INIT) != QARENA_OK) {
+    result.internal = result_internal_create();
+    if (result.internal == NULL) {
         result.error = "Out of memory.";
         qarena_destroy(&parse_arena);
         return result;
@@ -141,7 +166,9 @@ QueryResult query_execute(CSVConfig *config, const char *sql) {
     if (qarena_create(&tmp_arena, QUERY_TMP_ARENA_INIT) != QARENA_OK) {
         result.error = "Out of memory.";
         qarena_destroy(&parse_arena);
-        qarena_destroy(&result.result_arena);
+        qarena_destroy(&result.internal->arena);
+        free(result.internal);
+        result.internal = NULL;
         return result;
     }
 
@@ -152,21 +179,23 @@ QueryResult query_execute(CSVConfig *config, const char *sql) {
     if (arena_create(&config_arena, QUERY_CONFIG_ARENA_INIT) != ARENA_OK) {
         result.error = "Out of memory.";
         qarena_destroy(&parse_arena);
-        qarena_destroy(&result.result_arena);
         qarena_destroy(&tmp_arena);
+        qarena_destroy(&result.internal->arena);
+        free(result.internal);
+        result.internal = NULL;
         return result;
     }
 
-    QueryResult exec = execute_select(config, stmt, &result.result_arena,
+    QueryResult exec = execute_select(config, stmt, &result.internal->arena,
                                       &tmp_arena, &config_arena);
     arena_destroy(&config_arena);
     qarena_destroy(&tmp_arena);
     qarena_destroy(&parse_arena);
 
     /* execute_select returns a fresh struct; hand over ownership of the
-       result arena we created for it. */
-    exec.result_arena = result.result_arena;
-    result.result_arena = (QArena){0};
+       private result arena we created for it. */
+    exec.internal = result.internal;
+    result.internal = NULL;
 
     return exec;
 }

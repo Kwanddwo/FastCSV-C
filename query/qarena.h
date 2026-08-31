@@ -23,6 +23,15 @@ typedef enum {
     QARENA_ERROR_INVALID_SIZE
 } QArenaResult;
 
+/* Uniform allocation-failure propagation for helpers returning a const
+   char* error string: evaluates `expr` exactly once; on any non-OK result
+   returns `msg` (typically "Out of memory."). */
+#define QARENA_IF_FAIL(expr, msg)                                        \
+    do {                                                                 \
+        QArenaResult _qarena_r = (expr);                                 \
+        if (_qarena_r != QARENA_OK) return (msg);                        \
+    } while (0)
+
 QArenaResult qarena_create(QArena *arena, size_t size);
 void qarena_reset(QArena *arena);
 void qarena_destroy(QArena *arena);

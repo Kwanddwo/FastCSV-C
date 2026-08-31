@@ -176,11 +176,12 @@ int eval_result_compare(const EvalResult *a, const EvalResult *b) {
     return strcmp(as, bs);
 }
 
-/* Duplicate an EvalResult's display value into the arena with a single
-   copy. A numeric value that carries its raw text (cells and literals like
-   "05") displays verbatim — the engine types text for computation but
-   never reformats it for display. Returns NULL on allocation failure. */
-const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena) {
+/* Convert an EvalResult to a display string: always an arena-owned copy.
+   A numeric value that carries its raw text (cells and literals like "05")
+   displays verbatim — the engine types text for computation but never
+   reformats it for display. A plain numeric is formatted; NULL is "NULL".
+   Returns NULL on allocation failure. */
+const char* eval_result_to_string(const EvalResult *r, QArena *arena) {
     if (r->is_error) return r->error ? r->error : "";
     if (r->is_null) return "NULL";
     if (r->is_numeric) {
@@ -205,16 +206,6 @@ const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena) {
     }
     return qarena_strdup(arena, r->str_val ? r->str_val : "");
 }
-
-/* Convert EvalResult to display string */
-const char* eval_result_to_string(const EvalResult *r, QArena *arena) {
-    if (r->is_error) return r->error ? r->error : "";
-    if (r->is_null) return "NULL";
-    if (r->is_numeric) return eval_result_dup_to_arena(r, arena);
-    return r->str_val ? r->str_val : "";
-}
-
-
 
 /* ===== LIKE pattern matching ===== */
 /* Iterative greedy matcher: on a mismatch after a '%', retry with the

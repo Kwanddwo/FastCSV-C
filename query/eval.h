@@ -69,10 +69,8 @@ bool parse_numeric_str(const EvalResult *r, double *out);
    NULL < numeric-like < text. Two values are "equal" when this returns 0. */
 int eval_result_compare(const EvalResult *a, const EvalResult *b);
 
-/* QArena-owning copy of a string result; NULL-safe. */
-const char* eval_result_dup_to_arena(const EvalResult *r, QArena *arena);
-
-/* Format a value for display (arena-allocated string). */
+/* Format a value for display: always an arena-owned copy (raw text for
+   typed text values, numeric formatting otherwise, "NULL" for NULLs). */
 const char* eval_result_to_string(const EvalResult *r, QArena *arena);
 
 /* ===== LIKE pattern matching ===== */

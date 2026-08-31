@@ -11,8 +11,11 @@
 
 #include "../csv_reader.h"
 #include "../csv_config.h"
-#include "../arena.h"
 #include "parser.h"
+
+/* Opaque result-set internals (the result arena); defined in query.c and
+   released by query_result_destroy. Callers: do not touch. */
+typedef struct QueryResultInternal QueryResultInternal;
 
 typedef struct {
     char **headers;
@@ -24,20 +27,21 @@ typedef struct {
     int error_column;               /* -1 for runtime errors (no source location);
                                        parse errors mirror the first entry of
                                        parse_errors below. */
-    ParseErrorList *parse_errors;   /* All parse errors collected */
-    QArena result_arena;             /* Owned result arena; destroy via
-                                       query_result_destroy. */
+    ParseErrorList *parse_errors;   /* All parse errors collected (read-only
+                                       for error reporting; do not modify) */
+    QueryResultInternal *internal;  /* result arena ownership (private) */
 } QueryResult;
 
 QueryResult query_result_init(void);
 
-/* Execute a statement. The result set is materialized in a result arena that
- * query_execute creates and owns; size it via query_result_destroy(). All
- * arenas grow on demand, so a statement needs no manual sizing. On failure
- * result.error is set. */
+/* Execute a statement. The result set is materialized in a result arena
+   owned by the result; release it via query_result_destroy(). All arenas
+   grow on demand, so a statement needs no sizing. On failure
+   result.error is set. */
 QueryResult query_execute(CSVConfig *config, const char *sql);
 
-/* Release the owned result arena (all headers, records, error copies). */
+/* Release everything the result owns (all headers, records, error copies,
+   the internal result arena). */
 void query_result_destroy(QueryResult *result);
 
 #endif
