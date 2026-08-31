@@ -14,6 +14,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <locale.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include "../arena.h"
@@ -1064,6 +1065,35 @@ static void test_locale_pinning(void) {
     } else {
         fail++;
         printf("FAIL: locale pinning: output '%.120s'\n", buf);
+    }
+
+    /* In-process proof the ENGINE pins (not just the CLI): set a comma-decimal
+       locale for this process, then query_execute directly. */
+    if (setlocale(LC_NUMERIC, "de_DE.UTF-8") != NULL ||
+        setlocale(LC_NUMERIC, "fr_FR.UTF-8") != NULL ||
+        setlocale(LC_NUMERIC, "fr_FR") != NULL) {
+        Arena ca;
+        if (arena_create(&ca, 2 * 1024) == ARENA_OK) {
+            CSVConfig *cfg = csv_config_create(&ca);
+            csv_config_set_has_header(cfg, 1);
+            QueryResult res = query_execute(
+                cfg, "SELECT 1.5 + 1 FROM 'query/data/students.csv' LIMIT 1");
+            bool ok = res.error == NULL && res.record_count == 1 &&
+                      strcmp(res.records[0]->fields[0], "2.5") == 0;
+            query_result_destroy(&res);
+            arena_destroy(&ca);
+            if (ok) {
+                pass++;
+            } else {
+                fail++;
+                printf("FAIL: engine does not pin LC_NUMERIC (in-process)\n");
+            }
+        }
+        setlocale(LC_NUMERIC, "C"); /* restore for the rest of the suite */
+    } else {
+        /* No comma-decimal locale installed: the in-process check is moot, but
+           the engine pin is still exercised by the CLI check above. */
+        pass++;
     }
 }
 

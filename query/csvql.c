@@ -560,9 +560,9 @@ static bool has_significant_code(const char *s) {
 int main(int argc, char **argv) {
     Arena cfg_arena;
 
-    /* Numbers parse and print with '.' regardless of the user's environment:
-       under a comma-decimal locale, strtod and %.15g would silently read
-       '1.5' cells as text and print 1,5. */
+    /* Numbers parse and print with '.' regardless of the user's environment.
+       The query engine pins LC_NUMERIC to "C" itself (lazily, on first use);
+       this early call just makes the guarantee explicit. */
     setlocale(LC_NUMERIC, "C");
 
     if (arena_create(&cfg_arena, CFG_ARENA_SIZE) != ARENA_OK) {

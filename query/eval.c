@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
+#include <locale.h>
 
 /* ===== Constants ===== */
 /* Doubles at or beyond this magnitude cannot be converted to long long
@@ -98,12 +99,27 @@ bool text_parses_numeric(const char *s, double *out) {
     return false;
 }
 
+/* Pin LC_NUMERIC to "C" before any strtod / %.15g. The engine's numeric
+   model is unconditional ('.' decimal separator): without this, a library
+   host whose process locale uses a comma decimal point would silently read
+   '1.5' cells as text and print 1,5. The pin is a one-time, idempotent
+   process-global change made lazily at the first numeric parse or format.
+   (The benign race on a first-use concurrent call only re-pins to C.) */
+void eval_pin_numeric_locale(void) {
+    static bool pinned = false;
+    if (!pinned) {
+        pinned = true;
+        setlocale(LC_NUMERIC, "C");
+    }
+}
+
 /* Classify a text value exactly once, regardless of whether it came from a
    CSV cell or a SQL literal: text that fully parses as a number IS a
    number (the engine's single typing rule), carrying its raw text so
    display and string functions see the original spelling. Anything else is
    a string. */
 static EvalResult classify_text(const char *s) {
+    eval_pin_numeric_locale();
     double v;
     if (text_parses_numeric(s, &v)) return eval_result_num_text(v, s);
     return eval_result_str(s);
@@ -182,6 +198,7 @@ int eval_result_compare(const EvalResult *a, const EvalResult *b) {
    reformats it for display. A plain numeric is formatted; NULL is "NULL".
    Returns NULL on allocation failure. */
 const char* eval_result_to_string(const EvalResult *r, QArena *arena) {
+    eval_pin_numeric_locale();
     if (r->is_error) return r->error ? r->error : "";
     if (r->is_null) return "NULL";
     if (r->is_numeric) {

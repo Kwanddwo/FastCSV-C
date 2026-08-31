@@ -100,6 +100,10 @@ static ParseErrorList* copy_parse_errors(const ParseErrorList *src, QArena *dst)
 QueryResult query_execute(CSVConfig *config, const char *sql) {
     QueryResult result = query_result_init();
 
+    /* Numeric parsing/formatting is locale-independent: pin '.' before the
+       first strtod/%.15g (idempotent; classify/eval also pin lazily). */
+    eval_pin_numeric_locale();
+
     /* Parse into a private scratch arena so the AST and parse-error scratch
        do not consume the result arena. */
     QArena parse_arena;

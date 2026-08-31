@@ -7,7 +7,11 @@
    multiple threads are NOT supported — serialize them externally. This is
    safe for the csvql CLI and single-threaded hosts.
    Count limits: result rows, groups and headers are ints; exceeding
-   INT_MAX rows/groups fails cleanly ("Result exceeds INT_MAX rows."). */
+   INT_MAX rows/groups fails cleanly ("Result exceeds INT_MAX rows.").
+   Numeric format: the engine pins LC_NUMERIC to "C" on first use, so CSV
+   numbers parse and print with a '.' decimal separator regardless of the
+   host process's locale (a comma-decimal locale would otherwise silently
+   misparse '1.5' as text and print 1,5). */
 
 #include "../csv_reader.h"
 #include "../csv_config.h"

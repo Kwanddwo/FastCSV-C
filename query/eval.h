@@ -105,6 +105,11 @@ bool text_parses_numeric(const char *s, double *out);
    evaluation): such calls must never be constant-folded. */
 bool is_volatile_function(const char *name);
 
+/* Pin LC_NUMERIC to "C" (idempotent, lazily on first use). The engine's
+   numeric model uses a '.' decimal separator regardless of the host
+   process's locale; call it before the first strtod/%.15g. */
+void eval_pin_numeric_locale(void);
+
 /* Evaluate an expression node against a context. */
 EvalResult eval_expr(ExprNode *node, EvalCtx *ctx);
 
