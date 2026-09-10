@@ -2,7 +2,7 @@ services:
   csvql:
     build:
       context: ../..
-      dockerfile: csvql/Dockerfile
+      dockerfile: query/benchmark/csvql/Dockerfile
     environment:
       DATA: /data/data.csv
       ROWS: ${ROWS:-1000000}

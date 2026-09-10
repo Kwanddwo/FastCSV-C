@@ -19,7 +19,7 @@ COPY query/ query/
 RUN make csvql
 
 WORKDIR /app
-COPY bench.sh /app/bench.sh
+COPY query/benchmark/csvql/bench.sh /app/bench.sh
 RUN chmod +x /app/bench.sh
 
 ENTRYPOINT ["/app/bench.sh"]
