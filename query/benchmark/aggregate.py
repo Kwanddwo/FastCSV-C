@@ -94,41 +94,40 @@ def main():
             print("| " + " | ".join(map(str, row)) + " |")
             csv_rows.append([q, name, startup, qres["total_ms"], qres["rows"]])
 
-    # Amortization table: cost of running each query N times in one process.
+    # Amortization tables: cost of running each query N times in one process.
     print()
-    print("## Amortization (cost of running a query N times in one process)")
+    print("## Amortization (ms, cost of running a query N times in one process)")
     print()
     print("Formula: `load_ms + N * query_ms`. csvql re-parses on every run "
           "(load_ms=0); sqlite and league/csv pay load once and benefit from "
           "repeated queries. Bold marks the cheapest engine per N.")
-    print()
-    hdr = ["query", "N=1", "N=10", "N=100", "N=1000"]
-    print("| " + " | ".join(hdr) + " |")
-    print("|" + "|".join(["---"] * len(hdr)) + "|")
     for q in QUERY_ORDER:
-        best = {}
-        for n in AMORT_N:
-            vals = {}
-            for name in candidates:
-                qres = results[name]["queries"].get(q)
-                if qres:
-                    vals[name] = results[name]["load_ms"] + n * qres["query_ms"]
-            if vals:
-                best[n] = min(vals, key=vals.get)
-        cells = []
+        vals_by_candidate = {}
         for name in candidates:
             qres = results[name]["queries"].get(q)
-            if not qres:
-                continue
-            parts = []
-            for n in AMORT_N:
-                v = results[name]["load_ms"] + n * qres["query_ms"]
-                if best.get(n) == name:
-                    parts.append(f"**{v:.1f}**")
-                else:
-                    parts.append(f"{v:.1f}")
-            cells.append(f"{name}: " + " / ".join(parts))
-        print(f"| {QUERY_LABELS[q]} | " + " | ".join(cells) + " |")
+            if qres:
+                vals_by_candidate[name] = [
+                    results[name]["load_ms"] + n * qres["query_ms"]
+                    for n in AMORT_N
+                ]
+        if not vals_by_candidate:
+            continue
+        best = []
+        for i in range(len(AMORT_N)):
+            col = {name: vals[i] for name, vals in vals_by_candidate.items()}
+            best.append(min(col, key=col.get))
+        print()
+        print(f"### {QUERY_LABELS[q]}")
+        print()
+        hdr = ["candidate"] + [f"N={n}" for n in AMORT_N]
+        print("| " + " | ".join(hdr) + " |")
+        print("|" + "|".join(["---"] * len(hdr)) + "|")
+        for name, vals in vals_by_candidate.items():
+            cells = [
+                f"**{v:,.1f}**" if best[i] == name else f"{v:,.1f}"
+                for i, v in enumerate(vals)
+            ]
+            print(f"| {name} | " + " | ".join(cells) + " |")
 
     out_csv = RESULTS_DIR / "comparison.csv"
     with out_csv.open("w", newline="") as fh:
